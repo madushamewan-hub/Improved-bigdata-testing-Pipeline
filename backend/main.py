@@ -12,6 +12,7 @@ sys.path.append('..')
 from backend.database import SessionLocal, engine, Base, Dataset, ExperimentRun, PipelineResult, StageCheckResult
 from backend.schemas import ExperimentRunRequest
 from backend.pipeline_sim import simulate_baseline_execution, simulate_proposed_execution
+from backend.file_parser import FileParser
 import shutil
 
 Base.metadata.create_all(bind=engine)
@@ -93,36 +94,52 @@ async def get_pipeline_flows():
 
 @app.post("/api/upload")
 async def upload_dataset(file: UploadFile = File(...)):
-    """Upload a CSV dataset"""
+    """Upload dataset in multiple formats: CSV, JSON, NDJSON, Parquet, Excel, TSV"""
     try:
         if file is None or not file.filename:
             raise HTTPException(status_code=400, detail="No file provided")
 
-        if not file.filename.lower().endswith('.csv'):
-            raise HTTPException(status_code=400, detail="Only CSV files supported")
+        # Detect file format
+        file_format = FileParser.get_file_format(file.filename)
+        if not file_format:
+            supported = ', '.join(FileParser.SUPPORTED_FORMATS)
+            raise HTTPException(
+                status_code=400, 
+                detail=f"Unsupported file format. Supported formats: {supported}"
+            )
 
+        # Save uploaded file
         file_path = os.path.join("uploads", os.path.basename(file.filename))
         os.makedirs("uploads", exist_ok=True)
 
         with open(file_path, "wb") as f:
             shutil.copyfileobj(file.file, f)
 
-        # Parse CSV to infer schema
+        # Validate file size
+        file_size = os.path.getsize(file_path)
+        is_valid, error_msg = FileParser.validate_file(file_path, file_size)
+        if not is_valid:
+            os.remove(file_path)
+            raise HTTPException(status_code=400, detail=error_msg)
+
+        # Parse file
         try:
-            df = pd.read_csv(file_path)
+            df, schema = FileParser.parse_file(file_path, file_format)
+        except ValueError as parse_err:
+            os.remove(file_path)
+            raise HTTPException(status_code=400, detail=str(parse_err))
         except Exception as parse_err:
             os.remove(file_path)
-            raise HTTPException(status_code=400, detail=f"CSV parse failed: {parse_err}")
+            raise HTTPException(status_code=400, detail=f"File parsing failed: {parse_err}")
 
         row_count = len(df)
-        schema = {col: str(df[col].dtype) for col in df.columns}
-
+        
         # Store in DB
         db = SessionLocal()
         try:
             dataset = Dataset(
-                name=file.filename.replace('.csv', ''),
-                type="custom",
+                name=file.filename.rsplit('.', 1)[0],  # Remove extension
+                type=file_format,
                 row_count=row_count,
                 schema_json=schema,
                 file_path=file_path
@@ -134,13 +151,14 @@ async def upload_dataset(file: UploadFile = File(...)):
         finally:
             db.close()
 
-        # Make preview JSON-safe by replacing NaN/inf with None and converting numpy scalars
-        preview_records = df.head(5).to_dict(orient="records")
-        preview_records = _sanitize_for_json(preview_records)
+        # Get preview and sanitize
+        preview_records = FileParser.get_preview(df, rows=5)
 
         return {
             "id": dataset_id,
             "name": dataset.name,
+            "format": file_format,
+            "size_mb": file_size / 1024 / 1024,
             "row_count": row_count,
             "schema": schema,
             "preview": preview_records
@@ -148,9 +166,14 @@ async def upload_dataset(file: UploadFile = File(...)):
     except HTTPException as he:
         raise he
     except Exception as e:
-        app.logger if hasattr(app, 'logger') else None
         print(f"Upload error: {e}")
         raise HTTPException(status_code=500, detail=f"Unexpected server error: {e}")
+
+@app.get("/api/upload/formats")
+async def get_supported_formats():
+    """Get list of supported file formats and their info"""
+    return FileParser.get_format_info()
+
 
 @app.get("/api/datasets")
 async def list_datasets():

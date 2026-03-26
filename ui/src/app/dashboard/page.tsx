@@ -12,6 +12,15 @@ interface DashboardStats {
   average_overhead_ms: number
 }
 
+const KPI_EXPLANATIONS: Record<string, string> = {
+  total_experiments: 'Number of completed pipeline experiments used to produce the dashboard metrics.',
+  baseline_detection_rate: 'Baseline pipeline % of known data issues detected successfully.',
+  proposed_detection_rate: 'Proposed pipeline % of known data issues detected successfully.',
+  baseline_false_negatives: 'Average count of true positives missed by the baseline pipeline.',
+  proposed_false_negatives: 'Average count of true positives missed by the proposed pipeline.',
+  average_overhead_ms: 'Average additional time in milliseconds introduced by the proposed pipeline over baseline.',
+}
+
 export default function Dashboard() {
   const [stats, setStats] = useState<DashboardStats | null>(null)
   const [loading, setLoading] = useState(true)
@@ -54,13 +63,31 @@ export default function Dashboard() {
       })
   }, [])
 
-  const KPICard = ({ title, value, subtitle, color }: any) => (
-    <div className={`${color} rounded-lg shadow p-6 text-white`}>
-      <p className="text-sm font-medium opacity-90">{title}</p>
-      <p className="text-3xl font-bold mt-2">{typeof value === 'number' ? value.toFixed(2) : value}</p>
-      {subtitle && <p className="text-xs opacity-75 mt-1">{subtitle}</p>}
-    </div>
-  )
+  const KPICard = ({ title, value, subtitle, color, metricKey }: any) => {
+    const explanation = metricKey ? KPI_EXPLANATIONS[metricKey] : ''
+    return (
+      <div className={`${color} rounded-lg shadow p-6 text-white`}>
+        <div className="flex items-center justify-between">
+          <p className="text-sm font-medium opacity-90">{title}</p>
+          {explanation && (
+            <span
+              className="text-xs px-2 py-1 bg-white/20 rounded-full cursor-help"
+              title={explanation}
+              aria-label={explanation}
+            >
+              ℹ️
+            </span>
+          )}
+        </div>
+        <p className="text-3xl font-bold mt-2">{typeof value === 'number' ? value.toFixed(2) : value}</p>
+        {subtitle && <p className="text-xs opacity-75 mt-1">{subtitle}</p>}
+        {/* For screen readers and longer references we can keep the details visible */}
+        {metricKey && KPI_EXPLANATIONS[metricKey] && (
+          <p className="text-[10px] opacity-80 mt-2 bg-white/10 rounded px-2 py-1">{KPI_EXPLANATIONS[metricKey]}</p>
+        )}
+      </div>
+    )
+  }
 
   return (
     <div className="space-y-8">
@@ -82,38 +109,65 @@ export default function Dashboard() {
       ) : stats ? (
         <>
           {/* KPI Cards */}
-          <div className="grid grid-cols-2 gap-6 lg:grid-cols-3">
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
             <KPICard 
               title="Total Experiments Run"
               value={stats.total_experiments}
+              metricKey="total_experiments"
               color="bg-blue-600"
             />
-            <KPICard 
-              title="Baseline Detection Rate"
-              value={`${(stats.baseline_detection_rate * 100).toFixed(1)}%`}
-              color="bg-orange-600"
-            />
-            <KPICard 
-              title="Proposed Detection Rate"
-              value={`${(stats.proposed_detection_rate * 100).toFixed(1)}%`}
-              color="bg-green-600"
-            />
-            <KPICard 
-              title="Baseline False Negatives (avg)"
-              value={stats.baseline_false_negatives}
-              color="bg-red-600"
-            />
-            <KPICard 
-              title="Proposed False Negatives (avg)"
-              value={stats.proposed_false_negatives}
-              color="bg-yellow-600"
-            />
-            <KPICard 
-              title="Avg Latency Overhead"
-              value={`${stats.average_overhead_ms.toFixed(0)}ms`}
-              subtitle="Proposed vs Baseline"
-              color="bg-purple-600"
-            />
+            <div className="lg:col-span-2 space-y-4">
+              <div className="text-sm font-semibold text-gray-700">Baseline Pipeline Metrics</div>
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <KPICard 
+                  title="Detection Rate"
+                  value={`${(stats.baseline_detection_rate * 100).toFixed(1)}%`}
+                  metricKey="baseline_detection_rate"
+                  color="bg-orange-600"
+                />
+                <KPICard 
+                  title="False Negatives"
+                  value={stats.baseline_false_negatives}
+                  metricKey="baseline_false_negatives"
+                  color="bg-red-600"
+                />
+                <KPICard 
+                  title="Avg Latency"
+                  value="N/A"
+                  subtitle="Baseline baseline for comparison"
+                  color="bg-orange-400"
+                />
+              </div>
+            </div>
+          </div>
+
+          <div className="grid grid-cols-1 gap-6 lg:grid-cols-3">
+            <div className="lg:col-start-2 text-sm font-semibold text-gray-700">Proposed Pipeline Metrics</div>
+            <div />
+            <div />
+            <div className="lg:col-span-2">
+              <div className="grid grid-cols-1 gap-4 md:grid-cols-3">
+                <KPICard 
+                  title="Detection Rate"
+                  value={`${(stats.proposed_detection_rate * 100).toFixed(1)}%`}
+                  metricKey="proposed_detection_rate"
+                  color="bg-green-600"
+                />
+                <KPICard 
+                  title="False Negatives"
+                  value={stats.proposed_false_negatives}
+                  metricKey="proposed_false_negatives"
+                  color="bg-yellow-600"
+                />
+                <KPICard 
+                  title="Latency Overhead"
+                  value={`${stats.average_overhead_ms.toFixed(0)}ms`}
+                  metricKey="average_overhead_ms"
+                  subtitle="vs baseline" 
+                  color="bg-purple-600"
+                />
+              </div>
+            </div>
           </div>
 
           {/* Quick Actions */}
