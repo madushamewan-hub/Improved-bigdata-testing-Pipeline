@@ -30,14 +30,21 @@ export default function PipelineFlows() {
           },
         })
 
+        const normalizeEdges = (edges: any[]) =>
+          (edges ?? []).map((e: any, idx: number) => ({
+            id: `${e.source}-${e.target}-${idx}`,
+            source: e.source,
+            target: e.target,
+          }))
+
         setFlows({
           baseline: {
             nodes: (data?.baseline?.nodes ?? []).map(normalize),
-            edges: data?.baseline?.edges ?? [],
+            edges: normalizeEdges(data?.baseline?.edges),
           },
           proposed: {
             nodes: (data?.proposed?.nodes ?? []).map(normalize),
-            edges: data?.proposed?.edges ?? [],
+            edges: normalizeEdges(data?.proposed?.edges),
           },
         })
       })
