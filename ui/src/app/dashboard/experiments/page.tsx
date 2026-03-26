@@ -8,6 +8,19 @@ interface Dataset {
   row_count: number
 }
 
+interface PipelineStage {
+  name: string
+  icon: string
+}
+
+const PIPELINE_STAGES: PipelineStage[] = [
+  { name: 'Ingestion', icon: '📥' },
+  { name: 'Preprocessing', icon: '🧹' },
+  { name: 'Transformation', icon: '⚙️' },
+  { name: 'Storage', icon: '💾' },
+  { name: 'Output', icon: '📤' },
+]
+
 const SCENARIOS = ['real_world', 'clean', 'duplicated', 'dropped', 'corrupted', 'schema_drift', 'out_of_order', 'mixed']
 
 const SCENARIO_DESCRIPTIONS: Record<string, { title: string; description: string; useCase: string }> = {
@@ -108,6 +121,128 @@ const METRIC_EXPLANATIONS: Record<string, { name: string; definition: string; in
   }
 }
 
+// Progress component to show pipeline execution stages
+const ProgressLoading = ({ mode, baselineStage, proposedStage, totalProgress }: any) => {
+  return (
+    <div className="bg-white rounded-lg shadow p-8 space-y-8">
+      {/* Overall Progress */}
+      <div>
+        <div className="flex justify-between items-center mb-3">
+          <h3 className="font-bold text-gray-900">Overall Progress</h3>
+          <span className="text-lg font-bold text-blue-600">{Math.round(totalProgress)}%</span>
+        </div>
+        <div className="w-full bg-gray-200 rounded-full h-3 overflow-hidden">
+          <div
+            className="bg-blue-600 h-full transition-all duration-300 rounded-full"
+            style={{ width: `${Math.min(totalProgress, 100)}%` }}
+          />
+        </div>
+      </div>
+
+      <div className="grid grid-cols-1 lg:grid-cols-2 gap-8">
+        {/* Baseline Pipeline */}
+        <div>
+          <div className="flex items-center mb-4">
+            <span className="text-2xl mr-2">🏪</span>
+            <h3 className="font-bold text-gray-900">Baseline Pipeline</h3>
+            <span className="ml-auto text-sm font-semibold text-orange-600">{baselineStage}/{PIPELINE_STAGES.length}</span>
+          </div>
+          <div className="space-y-2">
+            {PIPELINE_STAGES.map((stage, idx) => {
+              const isActive = idx === baselineStage
+              const isCompleted = idx < baselineStage
+              return (
+                <div
+                  key={`baseline-${idx}`}
+                  className={`p-3 rounded-lg border-2 transition-all ${
+                    isCompleted
+                      ? 'border-orange-500 bg-orange-50'
+                      : isActive
+                      ? 'border-orange-400 bg-orange-100 shadow-md'
+                      : 'border-gray-200 bg-gray-50'
+                  }`}
+                >
+                  <div className="flex items-center gap-3">
+                    <span className="text-2xl">{stage.icon}</span>
+                    <div className="flex-1">
+                      <p className={`font-semibold ${isActive ? 'text-orange-700' : isCompleted ? 'text-orange-600' : 'text-gray-600'}`}>
+                        {stage.name}
+                      </p>
+                      {isActive && <p className="text-xs text-orange-600 mt-1">Processing...</p>}
+                      {isCompleted && <p className="text-xs text-orange-600 mt-1">✓ Completed</p>}
+                    </div>
+                    {isActive && (
+                      <div className="flex gap-1">
+                        <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" />
+                        <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }} />
+                        <div className="w-2 h-2 bg-orange-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }} />
+                      </div>
+                    )}
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        </div>
+
+        {/* Proposed Pipeline */}
+        {(mode === 'compare' || mode === 'proposed') && (
+          <div>
+            <div className="flex items-center mb-4">
+              <span className="text-2xl mr-2">🚀</span>
+              <h3 className="font-bold text-gray-900">Proposed Pipeline</h3>
+              <span className="ml-auto text-sm font-semibold text-green-600">{proposedStage}/{PIPELINE_STAGES.length}</span>
+            </div>
+            <div className="space-y-2">
+              {PIPELINE_STAGES.map((stage, idx) => {
+                const isActive = idx === proposedStage
+                const isCompleted = idx < proposedStage
+                return (
+                  <div
+                    key={`proposed-${idx}`}
+                    className={`p-3 rounded-lg border-2 transition-all ${
+                      isCompleted
+                        ? 'border-green-500 bg-green-50'
+                        : isActive
+                        ? 'border-green-400 bg-green-100 shadow-md'
+                        : 'border-gray-200 bg-gray-50'
+                    }`}
+                  >
+                    <div className="flex items-center gap-3">
+                      <span className="text-2xl">{stage.icon}</span>
+                      <div className="flex-1">
+                        <p className={`font-semibold ${isActive ? 'text-green-700' : isCompleted ? 'text-green-600' : 'text-gray-600'}`}>
+                          {stage.name}
+                        </p>
+                        {isActive && <p className="text-xs text-green-600 mt-1">Processing...</p>}
+                        {isCompleted && <p className="text-xs text-green-600 mt-1">✓ Completed</p>}
+                      </div>
+                      {isActive && (
+                        <div className="flex gap-1">
+                          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" />
+                          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" style={{ animationDelay: '0.2s' }} />
+                          <div className="w-2 h-2 bg-green-500 rounded-full animate-pulse" style={{ animationDelay: '0.4s' }} />
+                        </div>
+                      )}
+                    </div>
+                  </div>
+                )
+              })}
+            </div>
+          </div>
+        )}
+      </div>
+
+      {/* Info Message */}
+      <div className="bg-blue-50 border border-blue-200 rounded-lg p-4">
+        <p className="text-sm text-blue-800">
+          ⏱️ <strong>Execution in progress</strong> — Pipelines are processing your data through multiple quality validation stages. This usually takes a few seconds for large datasets.
+        </p>
+      </div>
+    </div>
+  )
+}
+
 export default function Experiments() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
   const [selectedDataset, setSelectedDataset] = useState<number | null>(null)
@@ -117,6 +252,9 @@ export default function Experiments() {
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null)
+  const [baselineStage, setBaselineStage] = useState<number>(0)
+  const [proposedStage, setProposedStage] = useState<number>(0)
+  const [totalProgress, setTotalProgress] = useState<number>(0)
 
   useEffect(() => {
     fetch('http://localhost:8000/api/datasets')
@@ -132,6 +270,39 @@ export default function Experiments() {
     }
     setRunning(true)
     setError('')
+    setBaselineStage(0)
+    setProposedStage(0)
+    setTotalProgress(0)
+
+    // Simulate progress updates
+    const progressInterval = setInterval(() => {
+      setTotalProgress(prev => {
+        if (prev < 95) return prev + Math.random() * 15
+        return prev
+      })
+    }, 500)
+
+    // Simulate baseline stages  
+    let baselineIdx = 0
+    const baselineInterval = setInterval(() => {
+      if (baselineIdx < 4) {
+        baselineIdx++
+        setBaselineStage(baselineIdx)
+      }
+    }, mode === 'compare' ? 1200 : 800)
+
+    // Simulate proposed stages
+    let proposedIdx = 0
+    let proposedInterval: NodeJS.Timeout | null = null
+    if (mode === 'compare' || mode === 'proposed') {
+      proposedInterval = setInterval(() => {
+        if (proposedIdx < 4) {
+          proposedIdx++
+          setProposedStage(proposedIdx)
+        }
+      }, 1400)
+    }
+
     try {
       const res = await fetch('http://localhost:8000/api/experiments/run', {
         method: 'POST',
@@ -147,12 +318,16 @@ export default function Experiments() {
         const expRes = await fetch(`http://localhost:8000/api/experiments/${data.experiment_id}`)
         const expData = await expRes.json()
         setResult(expData)
+        setTotalProgress(100)
       } else {
         setError(data.detail || 'Failed to run experiment')
       }
     } catch (err: any) {
       setError(err.message)
     } finally {
+      clearInterval(progressInterval)
+      clearInterval(baselineInterval)
+      if (proposedInterval) clearInterval(proposedInterval)
       setRunning(false)
     }
   }
@@ -206,7 +381,9 @@ export default function Experiments() {
         <p className="text-gray-600 mt-2">Execute pipelines with different data scenarios and compare performance</p>
       </div>
 
-      {!result ? (
+      {running ? (
+        <ProgressLoading mode={mode} baselineStage={baselineStage} proposedStage={proposedStage} totalProgress={totalProgress} />
+      ) : !result ? (
         <div className="space-y-6">
           {/* Info Cards */}
           <div className="grid gap-4 lg:grid-cols-2">
