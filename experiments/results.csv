@@ -1,0 +1,5 @@
+fault_type,baseline_precision,baseline_recall,baseline_false_positives,baseline_false_negatives,baseline_detections,baseline_latency,proposed_precision,proposed_recall,proposed_false_positives,proposed_false_negatives,proposed_detections,proposed_latency,latency_overhead
+duplication,0,0,0,10,0,2.5510787963867188e-05,1.0,1.0,0,0,10,8.535385131835938e-05,5.984306335449219e-05
+corruption,0,0,0,10,0,1.430511474609375e-05,0.0,0.0,0,10,0,7.557868957519531e-05,6.127357482910156e-05
+data_loss,0,0,0,10,0,1.6450881958007812e-05,1.0,1.0,0,0,10,5.7220458984375e-05,4.076957702636719e-05
+inconsistency,0,0,0,10,0,1.3113021850585938e-05,0.3448275862068966,1.0,19,0,29,5.698204040527344e-05,4.38690185546875e-05

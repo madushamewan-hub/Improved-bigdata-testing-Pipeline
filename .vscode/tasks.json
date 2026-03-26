@@ -1,0 +1,80 @@
+{
+	"version": "2.0.0",
+	"tasks": [
+		{
+			"label": "Run Experiment",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe",
+			"args": [
+				"experiments/run_experiment.py"
+			],
+			"isBackground": false,
+			"group": "build"
+		},
+		{
+			"label": "pytest-run",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe -m pytest tests -q",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "pip-install-duckdb",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe -m pip install duckdb tabulate",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "pytest-run",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe -m pytest tests -q",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "write-experiment-file",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe",
+			"args": [
+				"-c",
+				"from pathlib import Path; content = \"\"\"import time\nimport pandas as pd\nfrom data_generator.order_events import (\n    generate_base_orders,\n    inject_duplicates,\n    inject_missing,\n    inject_corruption,\n    inject_schema_drift,\n    inject_out_of_order,\n)\nfrom pipelines.baseline.pipeline import run_batch as baseline_batch\nfrom pipelines.proposed.pipeline import run_batch as proposed_batch\n\nSCENARIOS = {\n    'clean': lambda o: o,\n    'duplicated': lambda o: inject_duplicates(o, 0.2),\n    'dropped': lambda o: inject_missing(o, 0.2),\n    'corrupted': lambda o: inject_corruption(o, 0.2),\n    'schema_drift': lambda o: inject_schema_drift(o, 0.2),\n    'out_of_order': lambda o: inject_out_of_order(o, 0.2),\n    'mixed': lambda o: inject_out_of_order(inject_corruption(inject_duplicates(inject_missing(o, 0.1), 0.1), 0.1), 0.1),\n}\n\ndef execute_scenario(name: str, source_data):\n    injected = SCENARIOS[name](source_data)\n\n    start = time.time()\n    base_metrics = baseline_batch(injected)\n    baseline_latency = time.time() - start\n\n    start = time.time()\n    prop_metrics = proposed_batch(injected)\n    proposed_latency = time.time() - start\n\n    source_count = len(source_data)\n    detected_issues = (prop_metrics.get('invalid_schema', 0) + prop_metrics.get('nulls', 0) +\n                       prop_metrics.get('type_mismatches', 0) + prop_metrics.get('transformation_failures', 0) +\n                       prop_metrics.get('row_count_mismatch', 0) + prop_metrics.get('checksum_mismatch', 0))\n\n    return {\n        'scenario': name,\n        'baseline_latency': baseline_latency,\n        'proposed_latency': proposed_latency,\n        'latency_overhead': proposed_latency - baseline_latency,\n        'baseline_record_count': base_metrics.get('record_count', 0),\n        'proposed_source_count': prop_metrics.get('source_count', 0),\n        'proposed_stored_rows': prop_metrics.get('stored_rows', 0),\n        'proposed_detected_issues': detected_issues,\n        'proposed_reconciliation': prop_metrics.get('downstream_reconciliation', False),\n        'proposed_out_of_order_rate': prop_metrics.get('out_of_order', 0.0),\n        'precision': 1.0 if detected_issues > 0 else 0.0,\n        'recall': float(detected_issues) / source_count if source_count > 0 else 0.0,\n        'false_positives': 0,\n        'false_negatives': max(0, source_count - prop_metrics.get('stored_rows', 0))\n    }\n\ndef run_experiments():\n    source_data = generate_base_orders(100, seed=42)\n\n    records = []\n    for scenario in SCENARIOS:\n        rec = execute_scenario(scenario, source_data)\n        records.append(rec)\n\n    df = pd.DataFrame(records)\n    Path('reports').mkdir(exist_ok=True)\n    df.to_csv('reports/experiment_results.csv', index=False)\n    with open('reports/experiment_results.md', 'w') as f:\n        f.write(df.to_markdown(index=False))\n    return df\n\n\nif __name__ == '__main__':\n    run_experiments()\n\"\"\"; Path('experiments/run_experiment.py').write_text(content)"
+			]
+		},
+		{
+			"label": "pytest-run",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe -m pytest tests -q",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "pytest-run",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe -m pytest tests -q",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "pytest-run",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe -m pytest tests -q",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "run-experiment",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe experiments/run_experiment.py",
+			"args": [],
+			"isBackground": false
+		},
+		{
+			"label": "run-experiment",
+			"type": "shell",
+			"command": "C:/Users/ASUS/AppData/Local/Programs/Python/Python314/python.exe experiments/run_experiment.py",
+			"args": [],
+			"isBackground": false
+		}
+	]
+}

@@ -1,0 +1,16 @@
+pyspark==3.5.0
+kafka-python==2.0.2
+psycopg2-binary==2.9.7
+duckdb==0.8.1
+pytest==7.4.0
+pandas==2.0.3
+numpy==1.24.3
+faker==19.3.1
+tabulate==0.9.0
+matplotlib==3.7.2
+seaborn==0.12.2
+fastapi==0.104.1
+uvicorn[standard]==0.24.0
+python-multipart==0.0.6
+sqlalchemy==2.0.23
+fastapi-cors==0.0.6

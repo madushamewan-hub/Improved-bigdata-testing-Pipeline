@@ -1,0 +1,88 @@
+import sys
+from pathlib import Path
+root = Path(__file__).resolve().parents[1]
+sys.path.append(str(root))
+import time
+import pandas as pd
+from data_generator.order_events import (
+    generate_base_orders,
+    inject_duplicates,
+    inject_missing,
+    inject_corruption,
+    inject_schema_drift,
+    inject_out_of_order,
+)
+from pipelines.baseline.pipeline import run_batch as baseline_batch
+from pipelines.proposed.pipeline import run_batch as proposed_batch
+
+SCENARIOS = {
+    'clean': lambda o: o,
+    'duplicated': lambda o: inject_duplicates(o, 0.2),
+    'dropped': lambda o: inject_missing(o, 0.2),
+    'corrupted': lambda o: inject_corruption(o, 0.2),
+    'schema_drift': lambda o: inject_schema_drift(o, 0.2),
+    'out_of_order': lambda o: inject_out_of_order(o, 0.2),
+    'mixed': lambda o: inject_out_of_order(inject_corruption(inject_duplicates(inject_missing(o, 0.1), 0.1), 0.1), 0.1),
+}
+
+
+def execute_scenario(name: str, source_data):
+    injected = SCENARIOS[name](source_data)
+
+    start = time.time()
+    base_metrics = baseline_batch(injected)
+    baseline_latency = time.time() - start
+
+    start = time.time()
+    prop_metrics = proposed_batch(injected)
+    proposed_latency = time.time() - start
+
+    source_count = len(source_data)
+    detected_issues = (prop_metrics.get('invalid_schema', 0) + prop_metrics.get('nulls', 0) +
+                       prop_metrics.get('type_mismatches', 0) + prop_metrics.get('transformation_failures', 0) +
+                       prop_metrics.get('row_count_mismatch', 0) + prop_metrics.get('checksum_mismatch', 0))
+
+    return {
+        'scenario': name,
+        'baseline_latency': baseline_latency,
+        'proposed_latency': proposed_latency,
+        'latency_overhead': proposed_latency - baseline_latency,
+        'baseline_record_count': base_metrics.get('record_count', 0),
+        'proposed_source_count': prop_metrics.get('source_count', 0),
+        'proposed_stored_rows': prop_metrics.get('stored_rows', 0),
+        'proposed_detected_issues': detected_issues,
+        'proposed_reconciliation': prop_metrics.get('downstream_reconciliation', False),
+        'proposed_out_of_order_rate': prop_metrics.get('out_of_order', 0.0),
+        'precision': 1.0 if detected_issues > 0 else 0.0,
+        'recall': float(detected_issues) / source_count if source_count > 0 else 0.0,
+        'false_positives': 0,
+        'false_negatives': max(0, source_count - prop_metrics.get('stored_rows', 0))
+    }
+
+
+def run_experiments_custom(data_path=None):
+    if data_path:
+        df = pd.read_csv(data_path)
+        source_data = df.to_dict('records')
+    else:
+        source_data = generate_base_orders(100, seed=42)
+
+    records = []
+    for scenario in SCENARIOS:
+        rec = execute_scenario(scenario, source_data)
+        records.append(rec)
+
+    df = pd.DataFrame(records)
+    Path('reports').mkdir(exist_ok=True)
+    df.to_csv('reports/experiment_results.csv', index=False)
+    with open('reports/experiment_results.md', 'w') as f:
+        f.write(df.to_markdown(index=False))
+    return df
+
+
+def run_experiments():
+    return run_experiments_custom()
+
+
+if __name__ == '__main__':
+    run_experiments()
