@@ -248,6 +248,7 @@ export default function Experiments() {
   const [selectedDataset, setSelectedDataset] = useState<number | null>(null)
   const [scenario, setScenario] = useState('real_world')
   const [mode, setMode] = useState('compare')
+  const [forceFullScan, setForceFullScan] = useState(false)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
@@ -311,6 +312,7 @@ export default function Experiments() {
           dataset_id: selectedDataset,
           scenario_name: scenario,
           mode: mode,
+          force_full_scan: forceFullScan,
         }),
       })
       const data = await res.json()
@@ -508,6 +510,28 @@ export default function Experiments() {
                 )}
               </div>
 
+              {/* Force Full Scan Option */}
+              <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+                <label className="flex items-start">
+                  <input
+                    type="checkbox"
+                    checked={forceFullScan}
+                    onChange={(e) => setForceFullScan(e.target.checked)}
+                    className="mt-1 mr-3"
+                  />
+                  <div>
+                    <p className="font-semibold text-yellow-900 text-sm">🔍 Force Full Scan</p>
+                    <p className="text-yellow-800 text-xs mt-1">
+                      For large datasets that were processed in limited mode, force complete analysis of all rows.
+                      This may take significantly longer and use more memory.
+                    </p>
+                    <p className="text-yellow-700 text-xs mt-1">
+                      Only enable if you need definitive results for the entire dataset.
+                    </p>
+                  </div>
+                </label>
+              </div>
+
               {error && <div className="bg-red-50 border border-red-200 rounded-lg p-4 text-red-800">{error}</div>}
 
               <button
@@ -525,6 +549,25 @@ export default function Experiments() {
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
             <p className="text-green-800 font-semibold">✓ Experiment completed!</p>
           </div>
+
+          {/* Processing Mode Warning */}
+          {result.dataset_info && result.dataset_info.truncated && (
+            <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
+              <div className="flex items-start">
+                <span className="text-yellow-600 text-xl mr-3">⚠️</span>
+                <div>
+                  <p className="text-yellow-800 font-semibold">Limited Processing Mode</p>
+                  <p className="text-yellow-700 text-sm mt-1">
+                    This dataset was too large to process fully. Only {result.dataset_info.rows_processed.toLocaleString()} of {result.dataset_info.total_rows.toLocaleString()} rows were analyzed.
+                    Results are approximate and may not reflect the complete dataset.
+                  </p>
+                  <p className="text-yellow-700 text-xs mt-2">
+                    For complete analysis, consider using a smaller dataset or contact support for full processing options.
+                  </p>
+                </div>
+              </div>
+            </div>
+          )}
 
           {/* Results */}
           <div className="grid grid-cols-2 gap-6 lg:grid-cols-3">
@@ -568,7 +611,11 @@ export default function Experiments() {
           )}
 
           <button
-            onClick={() => { setResult(null); setSelectedDataset(null) }}
+            onClick={() => { 
+              setResult(null); 
+              setSelectedDataset(null);
+              setForceFullScan(false);
+            }}
             className="bg-gray-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-700"
           >
             Run Another Experiment

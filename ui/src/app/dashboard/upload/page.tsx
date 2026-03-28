@@ -10,10 +10,20 @@ interface FileFormatInfo {
   example: string
 }
 
+interface UploadProgress {
+  loaded: number
+  total: number
+  percentage: number
+  speed: number // bytes per second
+  timeRemaining: number // seconds
+}
+
 export default function Upload() {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
+  const abortControllerRef = useRef<AbortController | null>(null)
   const [file, setFile] = useState<File | null>(null)
   const [uploading, setUploading] = useState(false)
+  const [progress, setProgress] = useState<UploadProgress | null>(null)
   const [preview, setPreview] = useState<any>(null)
   const [error, setError] = useState('')
   const [formats, setFormats] = useState<Record<string, FileFormatInfo>>({})
@@ -42,36 +52,115 @@ export default function Upload() {
     }
   }
 
-  const handleUpload = async () => {
+  const handleUpload = () => {
     if (!file) return
-    
-    // Warn if file is large
+
+    // Warn if file is very large
     const fileSizeMB = file.size / 1024 / 1024
-    if (fileSizeMB > 100) {
-      if (!window.confirm(`File is ${fileSizeMB.toFixed(1)}MB. Large files may take longer to process. Continue?`)) {
+    if (fileSizeMB > 500) {
+      if (!window.confirm(`File is ${fileSizeMB.toFixed(1)}MB. Very large files may take significant time and memory. Continue?`)) {
         return
       }
     }
 
     setUploading(true)
-    try {
-      const formData = new FormData()
-      formData.append('file', file)
-      const res = await fetch('http://localhost:8000/api/upload', {
-        method: 'POST',
-        body: formData,
-      })
-      const data = await res.json()
-      if (!res.ok) {
-        throw new Error(data.detail || 'Upload failed with server error')
+    setProgress(null)
+    setError('')
+
+    const formData = new FormData()
+    formData.append('file', file)
+
+    const xhr = new XMLHttpRequest()
+    abortControllerRef.current = new AbortController()
+
+    // Track upload start time for speed calculation
+    const startTime = Date.now()
+    let lastLoaded = 0
+    let lastTime = startTime
+
+    xhr.upload.addEventListener('progress', (e) => {
+      if (e.lengthComputable) {
+        const now = Date.now()
+        const timeDiff = (now - lastTime) / 1000 // seconds
+        const loadedDiff = e.loaded - lastLoaded
+
+        const speed = timeDiff > 0 ? loadedDiff / timeDiff : 0 // bytes per second
+        const percentage = (e.loaded / e.total) * 100
+        const remainingBytes = e.total - e.loaded
+        const timeRemaining = speed > 0 ? remainingBytes / speed : 0
+
+        setProgress({
+          loaded: e.loaded,
+          total: e.total,
+          percentage,
+          speed,
+          timeRemaining
+        })
+
+        lastLoaded = e.loaded
+        lastTime = now
       }
-      setPreview(data)
-      setFile(null)
-    } catch (err: any) {
-      setError(err.message)
-    } finally {
+    })
+
+    xhr.addEventListener('load', () => {
+      if (xhr.status >= 200 && xhr.status < 300) {
+        try {
+          const data = JSON.parse(xhr.responseText)
+          setPreview(data)
+          setFile(null)
+        } catch (err) {
+          setError('Failed to parse server response')
+        }
+      } else {
+        try {
+          const errorData = JSON.parse(xhr.responseText)
+          setError(errorData.detail || 'Upload failed with server error')
+        } catch (err) {
+          setError(`Upload failed with status ${xhr.status}`)
+        }
+      }
       setUploading(false)
+      setProgress(null)
+      abortControllerRef.current = null
+    })
+
+    xhr.addEventListener('error', () => {
+      setError('Network error occurred during upload')
+      setUploading(false)
+      setProgress(null)
+      abortControllerRef.current = null
+    })
+
+    xhr.addEventListener('abort', () => {
+      setError('Upload was cancelled')
+      setUploading(false)
+      setProgress(null)
+      abortControllerRef.current = null
+    })
+
+    xhr.open('POST', 'http://localhost:8000/api/upload')
+    xhr.send(formData)
+  }
+
+  const handleCancel = () => {
+    if (abortControllerRef.current) {
+      abortControllerRef.current.abort()
     }
+  }
+
+  const formatBytes = (bytes: number) => {
+    if (bytes === 0) return '0 B'
+    const k = 1024
+    const sizes = ['B', 'KB', 'MB', 'GB']
+    const i = Math.floor(Math.log(bytes) / Math.log(k))
+    return parseFloat((bytes / Math.pow(k, i)).toFixed(1)) + ' ' + sizes[i]
+  }
+
+  const formatTime = (seconds: number) => {
+    if (seconds < 60) return `${Math.round(seconds)}s`
+    const minutes = Math.floor(seconds / 60)
+    const remainingSeconds = Math.round(seconds % 60)
+    return `${minutes}m ${remainingSeconds}s`
   }
 
   return (
@@ -105,7 +194,7 @@ export default function Upload() {
               <p className="text-4xl mb-2">📁</p>
               <p className="font-semibold text-gray-900">Drag and drop your data file here</p>
               <p className="text-gray-600 text-sm mt-1">Supported formats: CSV, JSON, NDJSON, Parquet, Excel, TSV</p>
-              <p className="text-gray-500 text-xs mt-2">Max file size: 500MB</p>
+              <p className="text-gray-500 text-xs mt-2">No file size limit</p>
               <input
                 ref={fileInputRef}
                 type="file"
@@ -124,13 +213,41 @@ export default function Upload() {
               <div className="mt-4">
                 <p className="text-sm text-gray-600"><strong>Selected:</strong> {file.name}</p>
                 <p className="text-sm text-gray-600 mt-1"><strong>Size:</strong> {(file.size / 1024 / 1024).toFixed(2)}MB</p>
-                <button
-                  onClick={handleUpload}
-                  disabled={uploading}
-                  className="mt-4 bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
-                >
-                  {uploading ? 'Uploading...' : 'Upload File'}
-                </button>
+                {progress && (
+                  <div className="mt-4">
+                    <div className="flex justify-between text-sm text-gray-600 mb-2">
+                      <span>Upload Progress</span>
+                      <span>{progress.percentage.toFixed(1)}%</span>
+                    </div>
+                    <div className="w-full bg-gray-200 rounded-full h-2">
+                      <div
+                        className="bg-blue-600 h-2 rounded-full transition-all duration-300"
+                        style={{ width: `${progress.percentage}%` }}
+                      ></div>
+                    </div>
+                    <div className="flex justify-between text-xs text-gray-500 mt-1">
+                      <span>{formatBytes(progress.loaded)} / {formatBytes(progress.total)}</span>
+                      <span>{formatBytes(progress.speed)}/s • {formatTime(progress.timeRemaining)} left</span>
+                    </div>
+                  </div>
+                )}
+                <div className="flex space-x-3 mt-4">
+                  <button
+                    onClick={handleUpload}
+                    disabled={uploading}
+                    className="bg-blue-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-blue-700 disabled:opacity-50"
+                  >
+                    {uploading ? 'Uploading...' : 'Upload File'}
+                  </button>
+                  {uploading && (
+                    <button
+                      onClick={handleCancel}
+                      className="bg-red-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-red-700"
+                    >
+                      Cancel
+                    </button>
+                  )}
+                </div>
               </div>
             )}
             {error && <p className="mt-4 text-red-600 text-sm">{error}</p>}

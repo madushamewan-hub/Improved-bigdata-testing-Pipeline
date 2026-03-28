@@ -124,7 +124,7 @@ async def upload_dataset(file: UploadFile = File(...)):
 
         # Parse file
         try:
-            df, schema = FileParser.parse_file(file_path, file_format)
+            df, schema, processing_info = FileParser.parse_file(file_path, file_format)
         except ValueError as parse_err:
             os.remove(file_path)
             raise HTTPException(status_code=400, detail=str(parse_err))
@@ -133,15 +133,20 @@ async def upload_dataset(file: UploadFile = File(...)):
             raise HTTPException(status_code=400, detail=f"File parsing failed: {parse_err}")
 
         row_count = len(df)
+        total_rows = processing_info.get('total_rows', row_count)
         
         # Store in DB
         db = SessionLocal()
         try:
+            # Store processing info in schema
+            schema_with_processing = dict(schema)
+            schema_with_processing['processing_info'] = processing_info
+            
             dataset = Dataset(
                 name=file.filename.rsplit('.', 1)[0],  # Remove extension
                 type=file_format,
                 row_count=row_count,
-                schema_json=schema,
+                schema_json=schema_with_processing,
                 file_path=file_path
             )
             db.add(dataset)
@@ -160,8 +165,12 @@ async def upload_dataset(file: UploadFile = File(...)):
             "format": file_format,
             "size_mb": file_size / 1024 / 1024,
             "row_count": row_count,
+            "total_rows": total_rows,
             "schema": schema,
-            "preview": preview_records
+            "preview": preview_records,
+            "processing_mode": processing_info.get('processing_mode', 'full'),
+            "truncated": processing_info.get('truncated', False),
+            "rows_processed": processing_info.get('rows_processed', row_count)
         }
     except HTTPException as he:
         raise he
@@ -215,6 +224,40 @@ async def run_experiment(req: ExperimentRunRequest):
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
         
+        # Check if force full scan is requested
+        force_full_scan = getattr(req, 'force_full_scan', False)
+        
+        # If force full scan, re-parse the entire file
+        if force_full_scan:
+            file_path = dataset.file_path
+            if os.path.exists(file_path):
+                file_format = dataset.type
+                try:
+                    df, schema, processing_info = FileParser.parse_file(file_path, file_format)
+                    # Update dataset with full processing info
+                    schema_with_processing = dict(schema)
+                    schema_with_processing['processing_info'] = processing_info
+                    dataset.schema_json = schema_with_processing
+                    dataset.row_count = len(df)
+                    db.commit()
+                    # Refresh snapshot after commit
+                    db.refresh(dataset)
+                    dataset_schema_json = dataset.schema_json if isinstance(dataset.schema_json, dict) else {}
+                    row_count = len(df)
+                    print(f"Force full scan: processed {processing_info.get('rows_processed', 0)}/{processing_info.get('total_rows', 0)} rows")
+                except Exception as e:
+                    print(f"Force full scan failed: {e}")
+                    row_count = dataset.row_count
+            else:
+                row_count = dataset.row_count
+        else:
+            row_count = dataset.row_count
+        
+        # Snapshot values we need later before any commit that could expire the object
+        dataset_name = dataset.name
+        dataset_type = dataset.type
+        dataset_schema_json = dataset.schema_json if isinstance(dataset.schema_json, dict) else {}
+        
         # Create experiment run
         exp_run = ExperimentRun(
             dataset_id=req.dataset_id,
@@ -226,8 +269,8 @@ async def run_experiment(req: ExperimentRunRequest):
         db.commit()
         exp_run_id = exp_run.id
         
-        # Simulate pipeline execution
-        row_count = dataset.row_count
+        # Get processing info (already snapshotted above; use updated version if force full scan ran)
+        processing_info = dataset_schema_json.get('processing_info', {})
         
         if req.mode in ["baseline", "compare"]:
             bl_metrics, bl_stages, bl_latency = simulate_baseline_execution(row_count, req.scenario_name)
@@ -302,7 +345,30 @@ async def run_experiment(req: ExperimentRunRequest):
         db.commit()
         
         db.close()
-        return {"experiment_id": exp_run_id, "status": "completed"}
+        
+        # Add processing mode info to response — use pre-snapshotted plain Python dicts (session is closed)
+        processing_info = dataset_schema_json.get('processing_info', {})
+        
+        # Log processing info
+        print(f"Experiment {exp_run_id}: Dataset {dataset_name} ({dataset_type}) - "
+              f"Total rows: {processing_info.get('total_rows', row_count)}, "
+              f"Processed: {processing_info.get('rows_processed', row_count)}, "
+              f"Mode: {processing_info.get('processing_mode', 'unknown')}, "
+              f"Truncated: {processing_info.get('truncated', False)}, "
+              f"Force full scan: {force_full_scan}")
+        
+        response = {
+            "experiment_id": exp_run_id, 
+            "status": "completed",
+            "dataset_info": {
+                "total_rows": processing_info.get('total_rows', row_count),
+                "rows_processed": processing_info.get('rows_processed', row_count),
+                "processing_mode": processing_info.get('processing_mode', 'full'),
+                "truncated": processing_info.get('truncated', False)
+            }
+        }
+        
+        return response
     except Exception as e:
         print(f"Error: {str(e)}")
         raise HTTPException(status_code=500, detail=str(e))
