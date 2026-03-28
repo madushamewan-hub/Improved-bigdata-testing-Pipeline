@@ -1,0 +1,52 @@
+# Python
+__pycache__/
+*.py[cod]
+*.pyo
+*.pyd
+*.pyc
+*.egg
+*.egg-info/
+dist/
+build/
+.eggs/
+
+# Virtual environments
+.venv/
+venv/
+env/
+
+# Database files
+*.db
+*.sqlite
+*.sqlite3
+
+# Uploads (user data, not source)
+uploads/
+!uploads/.gitkeep
+
+# Reports (generated, not source)
+# Uncomment below if you want to exclude generated reports:
+# reports/
+
+# Environment variables
+.env
+.env.local
+.env.*.local
+
+# Node / Next.js
+ui/node_modules/
+ui/.next/
+ui/out/
+ui/.env*.local
+
+# OS
+.DS_Store
+Thumbs.db
+
+# IDE
+.vscode/settings.json
+.idea/
+*.suo
+*.ntvs*
+*.njsproj
+*.sln
