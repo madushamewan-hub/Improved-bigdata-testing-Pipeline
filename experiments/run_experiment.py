@@ -13,7 +13,7 @@ from data_generator.order_events import (
     inject_out_of_order,
 )
 from pipelines.baseline.pipeline import run_batch as baseline_batch
-from pipelines.proposed.pipeline import run_batch as proposed_batch
+from pipelines.proposed.pipeline import run_batch as proposed_batch, get_engine_capabilities
 
 SCENARIOS = {
     'clean': lambda o: o,
@@ -53,10 +53,39 @@ def execute_scenario(name: str, source_data):
         'proposed_detected_issues': detected_issues,
         'proposed_reconciliation': prop_metrics.get('downstream_reconciliation', False),
         'proposed_out_of_order_rate': prop_metrics.get('out_of_order', 0.0),
+        'sector': prop_metrics.get('sector', 'cross_industry'),
+        'dimension_average_score': prop_metrics.get('dimension_average_score', 0.0),
+        'sector_compliance_score': prop_metrics.get('sector_compliance_score', 0.0),
+        'composite_score': prop_metrics.get('composite_score', 0.0),
+        'retry_attempts': prop_metrics.get('retry_attempts', 0),
+        'quarantine_count': prop_metrics.get('quarantine_count', 0),
+        'checkpoint_recoveries': prop_metrics.get('checkpoint_recoveries', 0),
         'precision': 1.0 if detected_issues > 0 else 0.0,
         'recall': float(detected_issues) / source_count if source_count > 0 else 0.0,
         'false_positives': 0,
         'false_negatives': max(0, source_count - prop_metrics.get('stored_rows', 0))
+    }
+
+
+def execute_engine_benchmark(name: str, source_data, engine: str):
+    injected = SCENARIOS[name](source_data)
+
+    start = time.time()
+    metrics = proposed_batch(injected, engine=engine)
+    latency = time.time() - start
+
+    return {
+        'scenario': name,
+        'engine': engine,
+        'source_count': len(source_data),
+        'stored_rows': metrics.get('stored_rows', 0),
+        'dimension_average_score': metrics.get('dimension_average_score', 0.0),
+        'sector_compliance_score': metrics.get('sector_compliance_score', 0.0),
+        'composite_score': metrics.get('composite_score', 0.0),
+        'retry_attempts': metrics.get('retry_attempts', 0),
+        'quarantine_count': metrics.get('quarantine_count', 0),
+        'checkpoint_recoveries': metrics.get('checkpoint_recoveries', 0),
+        'latency_seconds': latency,
     }
 
 
@@ -77,6 +106,28 @@ def run_experiments_custom(data_path=None):
     df.to_csv('reports/experiment_results.csv', index=False)
     with open('reports/experiment_results.md', 'w') as f:
         f.write(df.to_markdown(index=False))
+
+    benchmark_records = []
+    capabilities = get_engine_capabilities()
+    supported_engines = ['python']
+    if capabilities.get('spark', {}).get('available'):
+        supported_engines.append('spark')
+
+    for scenario in SCENARIOS:
+        for engine_name in supported_engines:
+            try:
+                benchmark_records.append(execute_engine_benchmark(scenario, source_data, engine_name))
+            except Exception as exc:
+                benchmark_records.append({
+                    'scenario': scenario,
+                    'engine': engine_name,
+                    'error': str(exc),
+                })
+
+    benchmark_df = pd.DataFrame(benchmark_records)
+    benchmark_df.to_csv('reports/engine_benchmark_results.csv', index=False)
+    with open('reports/engine_benchmark_results.md', 'w') as f:
+        f.write(benchmark_df.to_markdown(index=False))
     return df
 
 

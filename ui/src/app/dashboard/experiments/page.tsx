@@ -245,22 +245,33 @@ const ProgressLoading = ({ mode, baselineStage, proposedStage, totalProgress }: 
 
 export default function Experiments() {
   const [datasets, setDatasets] = useState<Dataset[]>([])
+  const [engineCapabilities, setEngineCapabilities] = useState<any>(null)
   const [selectedDataset, setSelectedDataset] = useState<number | null>(null)
   const [scenario, setScenario] = useState('real_world')
   const [mode, setMode] = useState('compare')
+  const [engine, setEngine] = useState('python')
   const [forceFullScan, setForceFullScan] = useState(false)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
   const [expandedMetric, setExpandedMetric] = useState<string | null>(null)
+  const [showAdvancedInfo, setShowAdvancedInfo] = useState(false)
   const [baselineStage, setBaselineStage] = useState<number>(0)
   const [proposedStage, setProposedStage] = useState<number>(0)
   const [totalProgress, setTotalProgress] = useState<number>(0)
 
   useEffect(() => {
-    fetch('http://localhost:8000/api/datasets')
-      .then(res => res.json())
-      .then(setDatasets)
+    Promise.all([
+      fetch('http://localhost:8000/api/datasets').then(res => res.json()),
+      fetch('http://localhost:8000/api/runtime/engines').then(res => res.json()),
+    ])
+      .then(([datasetData, capabilityData]) => {
+        setDatasets(datasetData)
+        setEngineCapabilities(capabilityData)
+        if (!capabilityData?.spark?.available) {
+          setEngine('python')
+        }
+      })
       .catch(console.error)
   }, [])
 
@@ -313,6 +324,7 @@ export default function Experiments() {
           scenario_name: scenario,
           mode: mode,
           force_full_scan: forceFullScan,
+          engine: engine,
         }),
       })
       const data = await res.json()
@@ -510,6 +522,49 @@ export default function Experiments() {
                 )}
               </div>
 
+              <div>
+                <label className="block text-sm font-semibold text-gray-900 mb-3">Execution Engine</label>
+                <div className="space-y-2 mb-4">
+                  <label className="flex items-start">
+                    <input
+                      type="radio"
+                      name="engine"
+                      value="python"
+                      checked={engine === 'python'}
+                      onChange={(e) => setEngine(e.target.value)}
+                      className="mt-1 mr-3"
+                    />
+                    <div>
+                      <span className="text-gray-700 font-medium">Python Reference Engine</span>
+                      <p className="text-xs text-gray-500 mt-1">Stable local execution for the integrity testing framework.</p>
+                    </div>
+                  </label>
+                  <label className={`flex items-start ${engineCapabilities?.spark?.available ? '' : 'opacity-60'}`}>
+                    <input
+                      type="radio"
+                      name="engine"
+                      value="spark"
+                      checked={engine === 'spark'}
+                      onChange={(e) => setEngine(e.target.value)}
+                      className="mt-1 mr-3"
+                      disabled={!engineCapabilities?.spark?.available}
+                    />
+                    <div>
+                      <span className="text-gray-700 font-medium">Spark Adapter Engine</span>
+                      <p className="text-xs text-gray-500 mt-1">
+                        {engineCapabilities?.spark?.reason || 'Distributed execution adapter for comparative benchmarking.'}
+                      </p>
+                      {engineCapabilities?.spark?.alternate_python && (
+                        <p className="text-xs text-emerald-700 mt-1">Using alternate Spark Python: {engineCapabilities.spark.alternate_python}</p>
+                      )}
+                    </div>
+                  </label>
+                </div>
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-700">
+                  Engine selection applies to the proposed pipeline path. Baseline remains the lightweight reference comparator.
+                </div>
+              </div>
+
               {/* Force Full Scan Option */}
               <div className="bg-yellow-50 border border-yellow-200 rounded-lg p-4">
                 <label className="flex items-start">
@@ -588,6 +643,65 @@ export default function Experiments() {
             )}
           </div>
 
+          {result.proposed && (
+            <div className="bg-white rounded-lg shadow p-6 border border-emerald-200">
+              <div className="flex items-center justify-between mb-4">
+                <h3 className="font-bold text-gray-900">Advanced Evaluation (Step 1-4)</h3>
+                <button
+                  type="button"
+                  onClick={() => setShowAdvancedInfo(prev => !prev)}
+                  className="text-sm px-3 py-1 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
+                  title="Show score meanings"
+                >
+                  ℹ️ Score Meaning
+                </button>
+              </div>
+
+              {showAdvancedInfo && (
+                <div className="mb-4 bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-700 space-y-2">
+                  <p><strong>Composite Score</strong> combines dimension quality and sector target performance.</p>
+                  <p><strong>Formula:</strong> Composite = 0.6 × Dimension Average + 0.4 × Sector Compliance.</p>
+                  <p><strong>Dimension Average</strong> is the mean score across the 9 core dimensions (accuracy, completeness, consistency, validity, uniqueness, timeliness, integrity, reliability, traceability/governance).</p>
+                  <p><strong>Sector Compliance</strong> reflects pass-rate and attainment against the 15 advanced metric targets for the selected sector profile.</p>
+                  <p><strong>Interpretation:</strong> 90-100% excellent, 75-89% strong, 60-74% moderate, below 60% needs improvement.</p>
+                </div>
+              )}
+
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                  <p className="text-xs text-emerald-800 font-semibold">Composite Score</p>
+                  <p className="text-2xl font-bold text-emerald-700 mt-1">{((result.proposed.composite_score || 0) * 100).toFixed(1)}%</p>
+                  <p className="text-xs text-emerald-700 mt-1">{result.proposed.composite_formula || '0.6*dimension_average + 0.4*sector_compliance'}</p>
+                </div>
+                <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                  <p className="text-xs text-blue-800 font-semibold">Dimension Average</p>
+                  <p className="text-2xl font-bold text-blue-700 mt-1">{((result.proposed.dimension_average_score || 0) * 100).toFixed(1)}%</p>
+                  <p className="text-xs text-blue-700 mt-1">9-core-dimension aggregate</p>
+                </div>
+                <div className="bg-violet-50 rounded-lg p-4 border border-violet-200">
+                  <p className="text-xs text-violet-800 font-semibold">Sector Compliance</p>
+                  <p className="text-2xl font-bold text-violet-700 mt-1">{((result.proposed.sector_compliance_score || 0) * 100).toFixed(1)}%</p>
+                  <p className="text-xs text-violet-700 mt-1">Sector: {(result.proposed.sector || 'cross_industry').replace(/_/g, ' ')}</p>
+                </div>
+              </div>
+              <div className="mt-3 text-xs text-gray-600">Engine used: <span className="font-semibold text-gray-900">{(result.proposed.engine || result.engine || engine || 'python').replace(/_/g, ' ')}</span></div>
+              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                  <p className="text-xs text-gray-600 font-semibold">Retry Attempts</p>
+                  <p className="text-lg font-bold text-gray-900 mt-1">{result.proposed.retry_attempts || 0}</p>
+                </div>
+                <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
+                  <p className="text-xs text-amber-700 font-semibold">Quarantine Count</p>
+                  <p className="text-lg font-bold text-amber-800 mt-1">{result.proposed.quarantine_count || 0}</p>
+                </div>
+                <div className="bg-cyan-50 rounded-lg p-3 border border-cyan-200">
+                  <p className="text-xs text-cyan-700 font-semibold">Checkpoint Recoveries</p>
+                  <p className="text-lg font-bold text-cyan-800 mt-1">{result.proposed.checkpoint_recoveries || 0}</p>
+                </div>
+              </div>
+            </div>
+          )}
+
           {/* Metric Guide */}
           <div className="bg-indigo-50 border border-indigo-200 rounded-lg p-4">
             <h3 className="font-bold text-indigo-900 mb-2">📖 Metric Guide</h3>
@@ -606,6 +720,7 @@ export default function Experiments() {
                 <p>✓ Accuracy improvement: <span className="font-bold text-green-600">{((result.proposed.accuracy - result.baseline.accuracy) * 100).toFixed(1)}%</span></p>
                 <p>✓ False negatives reduced: <span className="font-bold text-green-600">{result.baseline.false_negatives - result.proposed.false_negatives}</span></p>
                 <p>⚠ Latency overhead: <span className="font-bold text-yellow-600">{result.proposed.overhead.toFixed(0)}ms</span></p>
+                <p>⭐ Composite score: <span className="font-bold text-emerald-700">{((result.proposed.composite_score || 0) * 100).toFixed(1)}%</span></p>
               </div>
             </div>
           )}
@@ -615,6 +730,8 @@ export default function Experiments() {
               setResult(null); 
               setSelectedDataset(null);
               setForceFullScan(false);
+              setEngine('python');
+              setShowAdvancedInfo(false);
             }}
             className="bg-gray-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-700"
           >

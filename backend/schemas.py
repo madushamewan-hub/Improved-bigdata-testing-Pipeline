@@ -42,6 +42,7 @@ class ExperimentRunRequest(BaseModel):
     scenario_name: str
     mode: str  # baseline, proposed, compare
     force_full_scan: Optional[bool] = False
+    engine: Optional[str] = 'python'
 
 class ExperimentRunResponse(BaseModel):
     id: int

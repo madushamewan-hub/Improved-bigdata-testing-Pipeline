@@ -6,6 +6,29 @@ export default function Reports() {
   const [experiments, setExperiments] = useState<any[]>([])
   const [stats, setStats] = useState<any>(null)
 
+  const downloadBenchmarkCSV = async () => {
+    const res = await fetch('http://localhost:8000/api/experiments')
+    const data = await res.json()
+    const csv = [
+      ['Experiment ID', 'Scenario', 'Engine', 'Proposed Accuracy', 'Composite Score', 'Sector Compliance'],
+      ...data.map((e: any) => [
+        e.id,
+        e.scenario,
+        e.engine || 'python',
+        ((e.proposed_accuracy || 0) * 100).toFixed(1) + '%',
+        ((e.proposed_composite_score || 0) * 100).toFixed(1) + '%',
+        ((e.proposed_sector_compliance || 0) * 100).toFixed(1) + '%',
+      ])
+    ].map(row => row.join(',')).join('\n')
+
+    const blob = new Blob([csv], { type: 'text/csv' })
+    const url = window.URL.createObjectURL(blob)
+    const a = document.createElement('a')
+    a.href = url
+    a.download = 'engine_benchmark_summary.csv'
+    a.click()
+  }
+
   useEffect(() => {
     Promise.all([
       fetch('http://localhost:8000/api/experiments').then(res => res.json()),
@@ -18,13 +41,15 @@ export default function Reports() {
 
   const downloadCSV = () => {
     const csv = [
-      ['Experiment ID', 'Scenario', 'Baseline Accuracy', 'Proposed Accuracy', 'Improvment'],
+      ['Experiment ID', 'Scenario', 'Baseline Accuracy', 'Proposed Accuracy', 'Improvement', 'Proposed Composite Score', 'Proposed Sector Compliance'],
       ...experiments.map(e => [
         e.id,
         e.scenario,
         (e.baseline_accuracy * 100).toFixed(1) + '%',
         (e.proposed_accuracy * 100).toFixed(1) + '%',
-        ((e.proposed_accuracy - e.baseline_accuracy) * 100).toFixed(1) + '%'
+        ((e.proposed_accuracy - e.baseline_accuracy) * 100).toFixed(1) + '%',
+        ((e.proposed_composite_score || 0) * 100).toFixed(1) + '%',
+        ((e.proposed_sector_compliance || 0) * 100).toFixed(1) + '%'
       ])
     ].map(row => row.join(',')).join('\n')
     
@@ -84,6 +109,15 @@ export default function Reports() {
               <p className="text-sm text-gray-600">Avg Overhead</p>
               <p className="text-2xl font-bold text-yellow-600">{stats.average_overhead_ms.toFixed(0)}ms</p>
             </div>
+            <div>
+              <p className="text-sm text-gray-600">Avg Composite Score</p>
+              <p className="text-2xl font-bold text-emerald-700">
+                {(experiments.length > 0
+                  ? (experiments.reduce((acc, e) => acc + (e.proposed_composite_score || 0), 0) / experiments.length) * 100
+                  : 0
+                ).toFixed(1)}%
+              </p>
+            </div>
           </div>
         </div>
       )}
@@ -110,6 +144,16 @@ export default function Reports() {
             <div>
               <p className="font-semibold">Download as JSON</p>
               <p className="text-xs text-green-100">Structured data for further analysis</p>
+            </div>
+          </button>
+          <button
+            onClick={downloadBenchmarkCSV}
+            className="w-full bg-violet-600 text-white px-6 py-3 rounded-lg font-semibold hover:bg-violet-700 text-left flex items-center"
+          >
+            <span className="mr-3">⚙️</span>
+            <div>
+              <p className="font-semibold">Download Engine Benchmark CSV</p>
+              <p className="text-xs text-violet-100">Python vs Spark comparison summary for experiment runs</p>
             </div>
           </button>
         </div>

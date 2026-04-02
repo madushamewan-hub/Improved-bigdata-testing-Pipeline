@@ -161,6 +161,32 @@ def simulate_proposed_execution(row_count: int, scenario: str) -> Tuple[Dict[str
         "record_count": int(stored_rows),
         "source_count": row_count
     }
+
+    dimension_scores = {
+        "accuracy": metrics["detection_accuracy"],
+        "completeness": 1.0 - min(1.0, false_negatives / max(1, row_count)),
+        "consistency": 1.0 - min(1.0, false_positives / max(1, row_count)),
+        "validity": max(0.0, min(1.0, metrics["precision"])),
+        "uniqueness": 1.0 if scenario != "duplicated" else 0.95,
+        "timeliness": 1.0 if scenario != "out_of_order" else 0.90,
+        "integrity": 1.0 - min(1.0, false_negatives / max(1, row_count * 2)),
+        "reliability": max(0.0, min(1.0, metrics["recall"])),
+        "traceability_governance": 0.98 if scenario != "schema_drift" else 0.92,
+    }
+    dimension_average_score = sum(dimension_scores.values()) / len(dimension_scores)
+    sector_compliance_score = max(0.0, min(1.0, 0.85 + (dimension_average_score - 0.8) * 0.6))
+    composite_score = (0.6 * dimension_average_score) + (0.4 * sector_compliance_score)
+
+    metrics["dimension_scores"] = dimension_scores
+    metrics["dimension_average_score"] = dimension_average_score
+    metrics["sector"] = "cross_industry"
+    metrics["sector_compliance_score"] = sector_compliance_score
+    metrics["sector_pass_rate"] = sector_compliance_score
+    metrics["composite_score"] = composite_score
+    metrics["composite_formula"] = "0.6*dimension_average + 0.4*sector_compliance"
+    metrics["retry_attempts"] = 0
+    metrics["quarantine_count"] = 0
+    metrics["checkpoint_recoveries"] = 0
     
     stage_results = [
         {

@@ -6,6 +6,7 @@ import pandas as pd
 import os
 import sys
 import math
+import time
 import numpy as np
 sys.path.append('..')
 
@@ -13,6 +14,9 @@ from backend.database import SessionLocal, engine, Base, Dataset, ExperimentRun,
 from backend.schemas import ExperimentRunRequest
 from backend.pipeline_sim import simulate_baseline_execution, simulate_proposed_execution
 from backend.file_parser import FileParser
+from pipelines.proposed.pipeline import run_batch as proposed_run_batch, get_engine_capabilities
+from data_generator.order_events import compute_checksum
+from data_generator.order_events import inject_duplicates, inject_missing, inject_corruption, inject_schema_drift, inject_out_of_order
 import shutil
 
 Base.metadata.create_all(bind=engine)
@@ -55,6 +59,117 @@ app.add_middleware(
 @app.get("/health")
 async def health_check():
     return {"status": "ok"}
+
+
+@app.get("/api/runtime/engines")
+async def get_runtime_engines():
+    return get_engine_capabilities()
+
+
+def _resolve_dataset_file_format(dataset: Dataset) -> str:
+    schema_json = dataset.schema_json if isinstance(dataset.schema_json, dict) else {}
+    candidates = [
+        schema_json.get('source_format'),
+        schema_json.get('format'),
+        dataset.type,
+        FileParser.get_file_format(dataset.file_path or ''),
+        FileParser.get_file_format(dataset.name or ''),
+    ]
+
+    for candidate in candidates:
+        if isinstance(candidate, str) and candidate.lower() in FileParser.SUPPORTED_FORMATS:
+            return candidate.lower()
+
+    supported = ', '.join(FileParser.SUPPORTED_FORMATS)
+    raise ValueError(
+        f"Could not resolve a supported file format for dataset '{dataset.name}'. "
+        f"Stored type was '{dataset.type}'. Supported: {supported}"
+    )
+
+
+def _pick_first_value(row: dict, aliases) -> object:
+    lowered = {str(key).lower(): key for key in row.keys()}
+    for alias in aliases:
+        actual_key = lowered.get(alias.lower())
+        if actual_key is None:
+            continue
+        value = row.get(actual_key)
+        if value is not None and value != '':
+            return value
+    return None
+
+
+def _normalize_record_for_pipeline(row: dict, row_index: int, dataset: Dataset) -> dict:
+    event_id = _pick_first_value(row, ['event_id', 'order_id', 'id'])
+    event_time = _pick_first_value(row, ['event_time', 'created_at', 'timestamp', 'date', 'birthdate'])
+    customer_id = _pick_first_value(row, ['customer_id', 'user_id', 'patient_id', 'website_session_id', 'first', 'customer'])
+    amount = _pick_first_value(row, ['amount', 'price_usd', 'price', 'total', 'cogs_usd'])
+    status = _pick_first_value(row, ['status', 'state', 'marital'])
+    version = _pick_first_value(row, ['version'])
+    source_system = _pick_first_value(row, ['source_system', 'source', 'channel'])
+
+    normalized = {
+        'event_id': str(event_id) if event_id is not None else f"{dataset.name or 'dataset'}-{row_index}",
+        'event_time': str(event_time) if event_time is not None else datetime.utcnow().isoformat(),
+        'customer_id': str(customer_id) if customer_id is not None else str(event_id if event_id is not None else f"entity-{row_index}"),
+        'source_system': str(source_system) if source_system is not None else (_resolve_dataset_file_format(dataset) or 'uploaded_file'),
+        'amount': amount if amount is not None else 0.0,
+        'status': str(status) if status is not None else 'observed',
+        'version': version if version is not None else 1,
+    }
+    normalized['checksum'] = compute_checksum(normalized)
+    return normalized
+
+
+def _normalize_dataset_records(records, dataset: Dataset):
+    return [
+        _normalize_record_for_pipeline(row, row_index=index, dataset=dataset)
+        for index, row in enumerate(records)
+    ]
+
+
+def _load_dataset_records(dataset: Dataset):
+    file_format = _resolve_dataset_file_format(dataset)
+    df, _, _ = FileParser.parse_file(dataset.file_path, file_format)
+    raw_records = df.to_dict(orient='records')
+    return _normalize_dataset_records(raw_records, dataset)
+
+
+def _apply_scenario(records, scenario_name: str):
+    scenario_map = {
+        'real_world': lambda rows: rows,
+        'clean': lambda rows: rows,
+        'duplicated': lambda rows: inject_duplicates(rows, 0.2),
+        'dropped': lambda rows: inject_missing(rows, 0.2),
+        'corrupted': lambda rows: inject_corruption(rows, 0.2),
+        'schema_drift': lambda rows: inject_schema_drift(rows, 0.2),
+        'out_of_order': lambda rows: inject_out_of_order(rows, 0.2),
+        'mixed': lambda rows: inject_out_of_order(inject_corruption(inject_duplicates(inject_missing(rows, 0.1), 0.1), 0.1), 0.1),
+    }
+    return scenario_map.get(scenario_name, lambda rows: rows)(records)
+
+
+def _derive_proposed_result_metrics(prop_metrics: dict, row_count: int, latency_ms: float):
+    detected_issues = float(prop_metrics.get('proposed_detected_issues', 0))
+    false_negatives = max(0, int(row_count - prop_metrics.get('stored_rows', 0)))
+    false_positives = max(0, int(prop_metrics.get('mapping_issues', 0)))
+    precision = detected_issues / max(1.0, detected_issues + false_positives)
+    recall = detected_issues / max(1.0, detected_issues + false_negatives) if (detected_issues + false_negatives) > 0 else 1.0
+    detection_accuracy = float(prop_metrics.get('dimension_average_score', 0.0)) or (detected_issues / max(1.0, float(row_count)))
+
+    return {
+        'detection_accuracy': detection_accuracy,
+        'precision': precision,
+        'recall': recall,
+        'false_positives': false_positives,
+        'false_negatives': false_negatives,
+        'detected_loss': max(0, int(prop_metrics.get('nulls', 0))),
+        'detected_duplicates': max(0, int(prop_metrics.get('mapping_issues', 0))),
+        'detected_corruption': max(0, int(prop_metrics.get('checksum_mismatch', 0))),
+        'detected_inconsistency': max(0, int(prop_metrics.get('row_count_mismatch', 0) + prop_metrics.get('invalid_schema', 0))),
+        'latency_ms': latency_ms,
+        'summary_json': prop_metrics,
+    }
 
 @app.get("/api/flows")
 async def get_pipeline_flows():
@@ -224,6 +339,13 @@ async def run_experiment(req: ExperimentRunRequest):
         if not dataset:
             raise HTTPException(status_code=404, detail="Dataset not found")
         
+        engine_name = getattr(req, 'engine', 'python') or 'python'
+        engine_capabilities = get_engine_capabilities()
+        if engine_name not in engine_capabilities:
+            raise HTTPException(status_code=400, detail=f"Unsupported engine: {engine_name}")
+        if not engine_capabilities[engine_name].get('available', False):
+            raise HTTPException(status_code=400, detail=engine_capabilities[engine_name].get('reason', 'Selected engine is unavailable'))
+
         # Check if force full scan is requested
         force_full_scan = getattr(req, 'force_full_scan', False)
         
@@ -231,7 +353,7 @@ async def run_experiment(req: ExperimentRunRequest):
         if force_full_scan:
             file_path = dataset.file_path
             if os.path.exists(file_path):
-                file_format = dataset.type
+                file_format = _resolve_dataset_file_format(dataset)
                 try:
                     df, schema, processing_info = FileParser.parse_file(file_path, file_format)
                     # Update dataset with full processing info
@@ -271,9 +393,12 @@ async def run_experiment(req: ExperimentRunRequest):
         
         # Get processing info (already snapshotted above; use updated version if force full scan ran)
         processing_info = dataset_schema_json.get('processing_info', {})
+        source_records = _load_dataset_records(dataset)
+        scenario_records = _apply_scenario(source_records, req.scenario_name)
+        scenario_row_count = len(scenario_records)
         
         if req.mode in ["baseline", "compare"]:
-            bl_metrics, bl_stages, bl_latency = simulate_baseline_execution(row_count, req.scenario_name)
+            bl_metrics, bl_stages, bl_latency = simulate_baseline_execution(scenario_row_count, req.scenario_name)
             bl_result = PipelineResult(
                 experiment_run_id=exp_run_id,
                 pipeline_type="baseline",
@@ -307,38 +432,52 @@ async def run_experiment(req: ExperimentRunRequest):
                     db.add(sr)
         
         if req.mode in ["proposed", "compare"]:
-            prop_metrics, prop_stages, prop_latency = simulate_proposed_execution(row_count, req.scenario_name)
+            prop_start = time.perf_counter()
+            prop_metrics = proposed_run_batch(scenario_records, sector='cross_industry', engine=engine_name)
+            prop_latency = (time.perf_counter() - prop_start) * 1000.0
+            derived_metrics = _derive_proposed_result_metrics(prop_metrics, scenario_row_count, prop_latency)
             prop_result = PipelineResult(
                 experiment_run_id=exp_run_id,
                 pipeline_type="proposed",
-                detection_accuracy=prop_metrics["detection_accuracy"],
-                precision=prop_metrics["precision"],
-                recall=prop_metrics["recall"],
-                false_positives=prop_metrics["false_positives"],
-                false_negatives=prop_metrics["false_negatives"],
-                detected_loss=prop_metrics["detected_loss"],
-                detected_duplicates=prop_metrics["detected_duplicates"],
-                detected_corruption=prop_metrics["detected_corruption"],
-                detected_inconsistency=prop_metrics["detected_inconsistency"],
-                latency_ms=prop_latency,
-                overhead_ms=prop_latency,
-                summary_json=prop_metrics
+                detection_accuracy=derived_metrics["detection_accuracy"],
+                precision=derived_metrics["precision"],
+                recall=derived_metrics["recall"],
+                false_positives=derived_metrics["false_positives"],
+                false_negatives=derived_metrics["false_negatives"],
+                detected_loss=derived_metrics["detected_loss"],
+                detected_duplicates=derived_metrics["detected_duplicates"],
+                detected_corruption=derived_metrics["detected_corruption"],
+                detected_inconsistency=derived_metrics["detected_inconsistency"],
+                latency_ms=derived_metrics["latency_ms"],
+                overhead_ms=derived_metrics["latency_ms"],
+                summary_json={**derived_metrics["summary_json"], "engine": engine_name}
             )
             db.add(prop_result)
             
-            # Store stage results
-            for stage in prop_stages:
-                for check in stage["checks"]:
-                    sr = StageCheckResult(
-                        experiment_run_id=exp_run_id,
-                        pipeline_type="proposed",
-                        stage_name=stage["stage"],
-                        check_name=check,
-                        issue_type=",".join(stage.get("issue_types", [])),
-                        passed=stage["passed"],
-                        findings_count=stage["findings"]
-                    )
-                    db.add(sr)
+            stage_mapping = {
+                'schema_validation': 'Ingestion',
+                'null_check': 'Ingestion',
+                'freshness_check': 'Ingestion',
+                'type_enforcement': 'Preprocessing',
+                'transformation_validation': 'Transformation',
+                'duplicate_mapping_check': 'Transformation',
+                'row_count_reconciliation': 'Storage',
+                'checksum_integrity': 'Storage',
+                'event_ordering_monitor': 'Output',
+                'downstream_reconciliation': 'Output',
+            }
+            for evidence in prop_metrics.get("check_evidence", []):
+                sr = StageCheckResult(
+                    experiment_run_id=exp_run_id,
+                    pipeline_type="proposed",
+                    stage_name=stage_mapping.get(evidence.get("check_id"), "Output"),
+                    check_name=evidence.get("check_id", "unknown_check"),
+                    issue_type=evidence.get("dimension", "integrity"),
+                    passed=evidence.get("status") == "pass",
+                    findings_count=int(evidence.get("findings", 0)),
+                    notes=str(evidence.get("evidence", {}).get("detail", "")),
+                )
+                db.add(sr)
         
         # Mark as completed
         exp_run.status = "completed"
@@ -355,7 +494,8 @@ async def run_experiment(req: ExperimentRunRequest):
               f"Processed: {processing_info.get('rows_processed', row_count)}, "
               f"Mode: {processing_info.get('processing_mode', 'unknown')}, "
               f"Truncated: {processing_info.get('truncated', False)}, "
-              f"Force full scan: {force_full_scan}")
+              f"Force full scan: {force_full_scan}, "
+              f"Engine: {engine_name}")
         
         response = {
             "experiment_id": exp_run_id, 
@@ -365,7 +505,8 @@ async def run_experiment(req: ExperimentRunRequest):
                 "rows_processed": processing_info.get('rows_processed', row_count),
                 "processing_mode": processing_info.get('processing_mode', 'full'),
                 "truncated": processing_info.get('truncated', False)
-            }
+            },
+            "engine": engine_name,
         }
         
         return response
@@ -433,12 +574,15 @@ async def get_experiment(exp_id: int):
     ).first()
     
     db.close()
+
+    proposed_summary = proposed.summary_json if (proposed and isinstance(proposed.summary_json, dict)) else {}
     
     return {
         "id": exp.id,
         "dataset_id": exp.dataset_id,
         "scenario": exp.scenario_name,
         "mode": exp.mode,
+        "engine": proposed_summary.get("engine", "python"),
         "status": exp.status,
         "baseline": {
             "accuracy": baseline.detection_accuracy if baseline else 0,
@@ -455,7 +599,17 @@ async def get_experiment(exp_id: int):
             "false_positives": proposed.false_positives if proposed else 0,
             "false_negatives": proposed.false_negatives if proposed else 0,
             "latency": proposed.latency_ms if proposed else 0,
-            "overhead": proposed.overhead_ms if proposed else 0
+            "overhead": proposed.overhead_ms if proposed else 0,
+            "dimension_average_score": proposed_summary.get("dimension_average_score", 0),
+            "sector": proposed_summary.get("sector", "cross_industry"),
+            "sector_compliance_score": proposed_summary.get("sector_compliance_score", 0),
+            "sector_pass_rate": proposed_summary.get("sector_pass_rate", 0),
+            "composite_score": proposed_summary.get("composite_score", 0),
+            "composite_formula": proposed_summary.get("composite_formula", ""),
+            "engine": proposed_summary.get("engine", "python"),
+            "retry_attempts": proposed_summary.get("retry_attempts", 0),
+            "quarantine_count": proposed_summary.get("quarantine_count", 0),
+            "checkpoint_recoveries": proposed_summary.get("checkpoint_recoveries", 0)
         } if proposed else None
     }
 
@@ -485,6 +639,9 @@ async def list_experiments():
             "scenario": exp.scenario_name,
             "baseline_accuracy": baseline.detection_accuracy if baseline else 0,
             "proposed_accuracy": proposed.detection_accuracy if proposed else 0,
+            "proposed_composite_score": (proposed.summary_json or {}).get("composite_score", 0) if proposed else 0,
+            "proposed_sector_compliance": (proposed.summary_json or {}).get("sector_compliance_score", 0) if proposed else 0,
+            "engine": (proposed.summary_json or {}).get("engine", "python") if proposed else "python",
             "timestamp": exp.started_at
         })
     

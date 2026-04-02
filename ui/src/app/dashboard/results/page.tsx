@@ -9,6 +9,7 @@ interface ExperimentSummary {
   scenario: string
   baseline_accuracy: number
   proposed_accuracy: number
+  engine: string
   timestamp: string
 }
 
@@ -84,6 +85,7 @@ export default function Results() {
                 >
                   <p className="text-sm font-semibold text-gray-900">{exp.scenario}</p>
                   <p className="text-xs text-gray-500">ID: {exp.id}</p>
+                  <p className="text-xs text-gray-500">Engine: {(exp.engine || 'python').replace(/_/g, ' ')}</p>
                 </button>
               ))}
             </div>
@@ -159,6 +161,41 @@ export default function Results() {
                 <div className="flex justify-between">
                   <span className="text-gray-600">Overhead:</span>
                   <span className="font-bold text-yellow-600">+{expDetails.proposed.overhead.toFixed(0)}ms</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-600">Engine:</span>
+                  <span className="font-bold text-gray-800">{(expDetails.proposed.engine || expDetails.engine || 'python').replace(/_/g, ' ')}</span>
+                </div>
+                <div className="pt-2 mt-2 border-t border-green-200">
+                  <p className="text-xs font-semibold text-green-800 mb-2">Advanced Evaluation</p>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Composite Score:</span>
+                    <span className="font-bold text-emerald-700">{((expDetails.proposed.composite_score || 0) * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Dimension Average:</span>
+                    <span className="font-bold text-blue-700">{((expDetails.proposed.dimension_average_score || 0) * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Sector Compliance:</span>
+                    <span className="font-bold text-violet-700">{((expDetails.proposed.sector_compliance_score || 0) * 100).toFixed(1)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Sector:</span>
+                    <span className="font-bold text-gray-800">{(expDetails.proposed.sector || 'cross_industry').replace(/_/g, ' ')}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Retry Attempts:</span>
+                    <span className="font-bold text-gray-800">{expDetails.proposed.retry_attempts || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Quarantine Count:</span>
+                    <span className="font-bold text-amber-700">{expDetails.proposed.quarantine_count || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Checkpoint Recoveries:</span>
+                    <span className="font-bold text-cyan-700">{expDetails.proposed.checkpoint_recoveries || 0}</span>
+                  </div>
                 </div>
               </div>
             </div>
