@@ -20,13 +20,19 @@ def enforce_types(event: Dict) -> Dict:
     return event
 
 
-def checksum_check(events: List[Dict]) -> bool:
+def checksum_mismatch_count(events: List[Dict]) -> int:
     from data_generator.order_events import compute_checksum
+
+    mismatches = 0
     for e in events:
         expected = compute_checksum(e)
         if e.get('checksum') != expected:
-            return False
-    return True
+            mismatches += 1
+    return mismatches
+
+
+def checksum_check(events: List[Dict]) -> bool:
+    return checksum_mismatch_count(events) == 0
 
 
 def duplicate_check(events: List[Dict]) -> bool:

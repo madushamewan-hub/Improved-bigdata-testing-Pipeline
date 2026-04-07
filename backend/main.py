@@ -1,5 +1,6 @@
 from fastapi import FastAPI, File, UploadFile, HTTPException
 from fastapi.middleware.cors import CORSMiddleware
+from fastapi.responses import StreamingResponse
 from sqlalchemy.orm import Session
 from sqlalchemy import func
 import pandas as pd
@@ -8,6 +9,9 @@ import sys
 import math
 import time
 import numpy as np
+from io import BytesIO
+from datetime import datetime
+from collections import Counter
 sys.path.append('..')
 
 from backend.database import SessionLocal, engine, Base, Dataset, ExperimentRun, PipelineResult, StageCheckResult
@@ -66,6 +70,37 @@ async def get_runtime_engines():
     return get_engine_capabilities()
 
 
+SCENARIO_DETECTION_LABELS = {
+    'real_world': 'real-world validation',
+    'clean': 'no issue injected',
+    'duplicated': 'duplication detected',
+    'dropped': 'dropped data detected',
+    'corrupted': 'corruption detected',
+    'schema_drift': 'schema drift detected',
+    'out_of_order': 'ordering issue detected',
+    'mixed': 'multiple issues detected',
+}
+
+
+def _scenario_detection_label(scenario_name: str) -> str:
+    return SCENARIO_DETECTION_LABELS.get(scenario_name, f'{scenario_name.replace("_", " ")} detected')
+
+
+def _infer_record_semantics(row: dict, dataset: Dataset) -> str:
+    dataset_name = str(getattr(dataset, 'name', '') or '').lower()
+    dataset_path = str(getattr(dataset, 'file_path', '') or '').lower()
+    row_keys = {str(key).lower() for key in row.keys()}
+
+    if any(token in dataset_name or token in dataset_path for token in ['patient', 'master', 'reference', 'lookup', 'dimension']):
+        return 'reference'
+
+    reference_indicators = {'birthdate', 'deathdate', 'gender', 'race', 'ethnicity', 'address', 'city', 'state', 'zip', 'marital'}
+    if row_keys & reference_indicators:
+        return 'reference'
+
+    return 'event'
+
+
 def _resolve_dataset_file_format(dataset: Dataset) -> str:
     schema_json = dataset.schema_json if isinstance(dataset.schema_json, dict) else {}
     candidates = [
@@ -107,6 +142,7 @@ def _normalize_record_for_pipeline(row: dict, row_index: int, dataset: Dataset) 
     status = _pick_first_value(row, ['status', 'state', 'marital'])
     version = _pick_first_value(row, ['version'])
     source_system = _pick_first_value(row, ['source_system', 'source', 'channel'])
+    record_semantics = _infer_record_semantics(row, dataset)
 
     normalized = {
         'event_id': str(event_id) if event_id is not None else f"{dataset.name or 'dataset'}-{row_index}",
@@ -116,6 +152,7 @@ def _normalize_record_for_pipeline(row: dict, row_index: int, dataset: Dataset) 
         'amount': amount if amount is not None else 0.0,
         'status': str(status) if status is not None else 'observed',
         'version': version if version is not None else 1,
+        'record_semantics': record_semantics,
     }
     normalized['checksum'] = compute_checksum(normalized)
     return normalized
@@ -149,10 +186,68 @@ def _apply_scenario(records, scenario_name: str):
     return scenario_map.get(scenario_name, lambda rows: rows)(records)
 
 
+def _compute_scenario_amended_count(source_records, scenario_records, scenario_name: str) -> int:
+    if scenario_name in {'real_world', 'clean'}:
+        return 0
+
+    source_ids = Counter(str(r.get('event_id')) for r in source_records)
+    scenario_ids = Counter(str(r.get('event_id')) for r in scenario_records)
+
+    if scenario_name == 'duplicated':
+        return int(sum(max(0, scenario_ids[key] - source_ids.get(key, 0)) for key in scenario_ids))
+    if scenario_name == 'out_of_order':
+        limit = min(len(source_records), len(scenario_records))
+        return int(sum(1 for idx in range(limit) if source_records[idx].get('event_id') != scenario_records[idx].get('event_id')))
+
+    tracked_fields = ['event_time', 'customer_id', 'source_system', 'amount', 'status', 'version', 'checksum']
+    source_by_id = {str(r.get('event_id')): r for r in source_records}
+    changed = 0
+    for row in scenario_records:
+        event_id = str(row.get('event_id'))
+        original = source_by_id.get(event_id)
+        if original is None:
+            changed += 1
+            continue
+        if any(original.get(field) != row.get(field) for field in tracked_fields):
+            changed += 1
+
+    if scenario_name == 'dropped':
+        removed = int(sum(max(0, source_ids[key] - scenario_ids.get(key, 0)) for key in source_ids))
+        return max(changed + removed, changed, removed)
+
+    if scenario_name == 'mixed':
+        added = int(sum(max(0, scenario_ids[key] - source_ids.get(key, 0)) for key in scenario_ids))
+        removed = int(sum(max(0, source_ids[key] - scenario_ids.get(key, 0)) for key in source_ids))
+        return max(changed + added + removed, changed)
+
+    return changed
+
+
 def _derive_proposed_result_metrics(prop_metrics: dict, row_count: int, latency_ms: float):
     detected_issues = float(prop_metrics.get('proposed_detected_issues', 0))
-    false_negatives = max(0, int(row_count - prop_metrics.get('stored_rows', 0)))
-    false_positives = max(0, int(prop_metrics.get('mapping_issues', 0)))
+    stored_rows = int(prop_metrics.get('stored_rows', row_count))
+    false_negatives = max(0, int(row_count - stored_rows))
+    false_positives = max(0, int(prop_metrics.get('false_positives', 0)))
+    dimension_findings = prop_metrics.get('dimension_findings', {}) or {}
+
+    detected_duplicates = max(0, int(prop_metrics.get('mapping_issues', dimension_findings.get('uniqueness', 0))))
+    detected_loss = max(
+        0,
+        int(prop_metrics.get('nulls', 0)),
+        int(dimension_findings.get('completeness', 0)),
+        false_negatives,
+    )
+    detected_corruption = max(
+        0,
+        int(prop_metrics.get('checksum_mismatch', 0)),
+        int(prop_metrics.get('transformation_failures', 0)),
+        int(dimension_findings.get('validity', 0)),
+    )
+    detected_inconsistency = max(
+        0,
+        int(prop_metrics.get('row_count_mismatch', 0) + prop_metrics.get('invalid_schema', 0) + prop_metrics.get('type_mismatches', 0)),
+    )
+
     precision = detected_issues / max(1.0, detected_issues + false_positives)
     recall = detected_issues / max(1.0, detected_issues + false_negatives) if (detected_issues + false_negatives) > 0 else 1.0
     detection_accuracy = float(prop_metrics.get('dimension_average_score', 0.0)) or (detected_issues / max(1.0, float(row_count)))
@@ -163,13 +258,64 @@ def _derive_proposed_result_metrics(prop_metrics: dict, row_count: int, latency_
         'recall': recall,
         'false_positives': false_positives,
         'false_negatives': false_negatives,
-        'detected_loss': max(0, int(prop_metrics.get('nulls', 0))),
-        'detected_duplicates': max(0, int(prop_metrics.get('mapping_issues', 0))),
-        'detected_corruption': max(0, int(prop_metrics.get('checksum_mismatch', 0))),
-        'detected_inconsistency': max(0, int(prop_metrics.get('row_count_mismatch', 0) + prop_metrics.get('invalid_schema', 0))),
+        'detected_loss': detected_loss,
+        'detected_duplicates': detected_duplicates,
+        'detected_corruption': detected_corruption,
+        'detected_inconsistency': detected_inconsistency,
         'latency_ms': latency_ms,
         'summary_json': prop_metrics,
     }
+
+
+def _build_pipeline_export_rows(exp: ExperimentRun, dataset: Dataset, pipeline_type: str, pipeline_result: PipelineResult | None, stage_checks: list[StageCheckResult]):
+    detection_label = _scenario_detection_label(exp.scenario_name)
+    summary = pipeline_result.summary_json if (pipeline_result and isinstance(pipeline_result.summary_json, dict)) else {}
+    engine_name = summary.get('engine', 'python' if pipeline_type == 'proposed' else 'baseline')
+
+    base_row = {
+        'experiment_id': exp.id,
+        'dataset_id': dataset.id if dataset else None,
+        'dataset_name': dataset.name if dataset else 'unknown',
+        'dataset_type': dataset.type if dataset else 'unknown',
+        'scenario': exp.scenario_name,
+        'detection': detection_label,
+        'source_record_count': int(summary.get('source_record_count', 0)),
+        'scenario_record_count': int(summary.get('scenario_record_count', 0)),
+        'actual_amended_count': int(summary.get('scenario_amended_count', 0)),
+        'pipeline_type': pipeline_type,
+        'engine': engine_name,
+        'accuracy': pipeline_result.detection_accuracy if pipeline_result else 0,
+        'precision': pipeline_result.precision if pipeline_result else 0,
+        'recall': pipeline_result.recall if pipeline_result else 0,
+        'false_positives': pipeline_result.false_positives if pipeline_result else 0,
+        'false_negatives': pipeline_result.false_negatives if pipeline_result else 0,
+        'detected_loss': pipeline_result.detected_loss if pipeline_result else 0,
+        'detected_duplicates': pipeline_result.detected_duplicates if pipeline_result else 0,
+        'detected_corruption': pipeline_result.detected_corruption if pipeline_result else 0,
+        'detected_inconsistency': pipeline_result.detected_inconsistency if pipeline_result else 0,
+        'latency_ms': pipeline_result.latency_ms if pipeline_result else 0,
+        'record_type': 'summary',
+        'stage': 'overall_summary',
+        'check_name': 'pipeline_summary',
+        'issue_type': detection_label,
+        'passed': True if pipeline_result else False,
+        'findings': int((pipeline_result.detected_loss if pipeline_result else 0) + (pipeline_result.detected_duplicates if pipeline_result else 0) + (pipeline_result.detected_corruption if pipeline_result else 0) + (pipeline_result.detected_inconsistency if pipeline_result else 0)),
+        'notes': summary.get('composite_formula', '') if pipeline_type == 'proposed' else '',
+    }
+
+    rows = [base_row]
+    for check in stage_checks:
+        rows.append({
+            **base_row,
+            'record_type': 'stage_check',
+            'stage': check.stage_name,
+            'check_name': check.check_name,
+            'issue_type': check.issue_type,
+            'passed': check.passed,
+            'findings': check.findings_count,
+            'notes': check.notes or '',
+        })
+    return rows
 
 @app.get("/api/flows")
 async def get_pipeline_flows():
@@ -396,6 +542,8 @@ async def run_experiment(req: ExperimentRunRequest):
         source_records = _load_dataset_records(dataset)
         scenario_records = _apply_scenario(source_records, req.scenario_name)
         scenario_row_count = len(scenario_records)
+        scenario_amended_count = _compute_scenario_amended_count(source_records, scenario_records, req.scenario_name)
+        detection_label = _scenario_detection_label(req.scenario_name)
         
         if req.mode in ["baseline", "compare"]:
             bl_metrics, bl_stages, bl_latency = simulate_baseline_execution(scenario_row_count, req.scenario_name)
@@ -413,7 +561,14 @@ async def run_experiment(req: ExperimentRunRequest):
                 detected_inconsistency=bl_metrics["detected_inconsistency"],
                 latency_ms=bl_latency,
                 overhead_ms=0,
-                summary_json=bl_metrics
+                summary_json={
+                    **bl_metrics,
+                    'scenario_amended_count': scenario_amended_count,
+                    'source_record_count': len(source_records),
+                    'scenario_record_count': scenario_row_count,
+                    'detection_label': detection_label,
+                    'engine': 'baseline',
+                }
             )
             db.add(bl_result)
             
@@ -450,7 +605,14 @@ async def run_experiment(req: ExperimentRunRequest):
                 detected_inconsistency=derived_metrics["detected_inconsistency"],
                 latency_ms=derived_metrics["latency_ms"],
                 overhead_ms=derived_metrics["latency_ms"],
-                summary_json={**derived_metrics["summary_json"], "engine": engine_name}
+                summary_json={
+                    **derived_metrics["summary_json"],
+                    'engine': engine_name,
+                    'scenario_amended_count': scenario_amended_count,
+                    'source_record_count': len(source_records),
+                    'scenario_record_count': scenario_row_count,
+                    'detection_label': detection_label,
+                }
             )
             db.add(prop_result)
             
@@ -500,6 +662,8 @@ async def run_experiment(req: ExperimentRunRequest):
         response = {
             "experiment_id": exp_run_id, 
             "status": "completed",
+            "detection_label": detection_label,
+            "scenario_amended_count": scenario_amended_count,
             "dataset_info": {
                 "total_rows": processing_info.get('total_rows', row_count),
                 "rows_processed": processing_info.get('rows_processed', row_count),
@@ -572,15 +736,19 @@ async def get_experiment(exp_id: int):
         PipelineResult.experiment_run_id == exp_id,
         PipelineResult.pipeline_type == "proposed"
     ).first()
+    dataset = db.query(Dataset).filter(Dataset.id == exp.dataset_id).first()
     
     db.close()
 
     proposed_summary = proposed.summary_json if (proposed and isinstance(proposed.summary_json, dict)) else {}
-    
+
     return {
         "id": exp.id,
         "dataset_id": exp.dataset_id,
+        "dataset_name": dataset.name if dataset else None,
         "scenario": exp.scenario_name,
+        "detection_label": _scenario_detection_label(exp.scenario_name),
+        "actual_amended_count": proposed_summary.get("scenario_amended_count", (baseline.summary_json or {}).get("scenario_amended_count", 0) if baseline else 0),
         "mode": exp.mode,
         "engine": proposed_summary.get("engine", "python"),
         "status": exp.status,
@@ -590,7 +758,11 @@ async def get_experiment(exp_id: int):
             "recall": baseline.recall if baseline else 0,
             "false_positives": baseline.false_positives if baseline else 0,
             "false_negatives": baseline.false_negatives if baseline else 0,
-            "latency": baseline.latency_ms if baseline else 0
+            "latency": baseline.latency_ms if baseline else 0,
+            "detected_duplicates": baseline.detected_duplicates if baseline else 0,
+            "detected_loss": baseline.detected_loss if baseline else 0,
+            "detected_corruption": baseline.detected_corruption if baseline else 0,
+            "detected_inconsistency": baseline.detected_inconsistency if baseline else 0
         } if baseline else None,
         "proposed": {
             "accuracy": proposed.detection_accuracy if proposed else 0,
@@ -600,6 +772,10 @@ async def get_experiment(exp_id: int):
             "false_negatives": proposed.false_negatives if proposed else 0,
             "latency": proposed.latency_ms if proposed else 0,
             "overhead": proposed.overhead_ms if proposed else 0,
+            "detected_duplicates": proposed.detected_duplicates if proposed else 0,
+            "detected_loss": proposed.detected_loss if proposed else 0,
+            "detected_corruption": proposed.detected_corruption if proposed else 0,
+            "detected_inconsistency": proposed.detected_inconsistency if proposed else 0,
             "dimension_average_score": proposed_summary.get("dimension_average_score", 0),
             "sector": proposed_summary.get("sector", "cross_industry"),
             "sector_compliance_score": proposed_summary.get("sector_compliance_score", 0),
@@ -631,12 +807,16 @@ async def list_experiments():
             PipelineResult.experiment_run_id == exp.id,
             PipelineResult.pipeline_type == "proposed"
         ).first()
+        dataset = db.query(Dataset).filter(Dataset.id == exp.dataset_id).first()
         db.close()
-        
+
         results.append({
             "id": exp.id,
             "dataset_id": exp.dataset_id,
+            "dataset_name": dataset.name if dataset else None,
             "scenario": exp.scenario_name,
+            "detection_label": _scenario_detection_label(exp.scenario_name),
+            "scenario_amended_count": ((proposed.summary_json or {}).get("scenario_amended_count", 0) if proposed else ((baseline.summary_json or {}).get("scenario_amended_count", 0) if baseline else 0)),
             "baseline_accuracy": baseline.detection_accuracy if baseline else 0,
             "proposed_accuracy": proposed.detection_accuracy if proposed else 0,
             "proposed_composite_score": (proposed.summary_json or {}).get("composite_score", 0) if proposed else 0,
@@ -684,6 +864,52 @@ async def get_stage_checks(exp_id: int):
             } for c in proposed_checks
         ]
     }
+
+@app.get("/api/experiments/{exp_id}/export.xlsx")
+async def export_experiment_excel(exp_id: int):
+    """Download an experiment workbook with separate baseline and proposed sheets."""
+    db = SessionLocal()
+    try:
+        exp = db.query(ExperimentRun).filter(ExperimentRun.id == exp_id).first()
+        if not exp:
+            raise HTTPException(status_code=404, detail="Experiment not found")
+
+        dataset = db.query(Dataset).filter(Dataset.id == exp.dataset_id).first()
+        baseline = db.query(PipelineResult).filter(
+            PipelineResult.experiment_run_id == exp_id,
+            PipelineResult.pipeline_type == "baseline"
+        ).first()
+        proposed = db.query(PipelineResult).filter(
+            PipelineResult.experiment_run_id == exp_id,
+            PipelineResult.pipeline_type == "proposed"
+        ).first()
+        baseline_checks = db.query(StageCheckResult).filter(
+            StageCheckResult.experiment_run_id == exp_id,
+            StageCheckResult.pipeline_type == "baseline"
+        ).all()
+        proposed_checks = db.query(StageCheckResult).filter(
+            StageCheckResult.experiment_run_id == exp_id,
+            StageCheckResult.pipeline_type == "proposed"
+        ).all()
+    finally:
+        db.close()
+
+    baseline_rows = _build_pipeline_export_rows(exp, dataset, 'baseline', baseline, baseline_checks)
+    proposed_rows = _build_pipeline_export_rows(exp, dataset, 'proposed', proposed, proposed_checks)
+
+    workbook = BytesIO()
+    with pd.ExcelWriter(workbook, engine='openpyxl') as writer:
+        pd.DataFrame(baseline_rows).to_excel(writer, sheet_name='baseline', index=False)
+        pd.DataFrame(proposed_rows).to_excel(writer, sheet_name='proposed', index=False)
+
+    workbook.seek(0)
+    filename = f"experiment_{exp_id}_report.xlsx"
+    return StreamingResponse(
+        workbook,
+        media_type='application/vnd.openxmlformats-officedocument.spreadsheetml.sheet',
+        headers={"Content-Disposition": f'attachment; filename="{filename}"'},
+    )
+
 
 @app.delete("/api/experiments/{exp_id}")
 async def delete_experiment(exp_id: int):

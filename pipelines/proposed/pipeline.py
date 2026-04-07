@@ -12,6 +12,7 @@ from .validation import (
     null_check,
     duplicate_check,
     checksum_check,
+    checksum_mismatch_count,
     transformation_check,
     reconciliation_check,
     enforce_types,
@@ -57,6 +58,10 @@ def _safe_event_time(value: str):
         return None
 
 
+def _record_semantics(record: Dict[str, Any]) -> str:
+    return str(record.get('record_semantics', 'event')).lower()
+
+
 def _resolve_external_spark_python() -> str | None:
     alt_python = os.environ.get(SPARK_ALT_PYTHON_ENV)
     if alt_python and Path(alt_python).exists():
@@ -79,6 +84,8 @@ def get_engine_capabilities() -> Dict[str, Dict[str, Any]]:
     alt_python_exists = bool(alt_python) and Path(alt_python).exists()
     configured_alt_python = os.environ.get(SPARK_ALT_PYTHON_ENV)
     prefer_external_runner = _should_use_external_spark_runner()
+    current_python_version = f'{sys.version_info.major}.{sys.version_info.minor}.{sys.version_info.micro}'
+    recommended_python = '3.11/3.12'
     pyspark_installed = False
     try:
         import pyspark  # noqa: F401
@@ -96,13 +103,20 @@ def get_engine_capabilities() -> Dict[str, Dict[str, Any]]:
             spark_reason = f'Using external Spark execution with Python runtime {alt_python}.'
         spark_mode = 'external_python'
     elif spark_available and python_supported and pyspark_installed:
-        spark_reason = 'PySpark is available in the current runtime.'
+        spark_reason = f'PySpark is available in the current Python {current_python_version} runtime.'
         spark_mode = 'in_process'
     elif not python_supported:
-        spark_reason = 'Current Python runtime is 3.14; configure SPARK_PYTHON_EXECUTABLE to a Python 3.11/3.12 interpreter.'
+        spark_reason = (
+            f'Current backend Python runtime is {current_python_version}; '
+            f'Spark adapter requires Python {recommended_python} or SPARK_PYTHON_EXECUTABLE '
+            f'to point to a compatible interpreter.'
+        )
         spark_mode = 'unavailable'
     else:
-        spark_reason = 'PySpark is not installed in the current runtime.'
+        spark_reason = (
+            f'PySpark is not installed in the current Python {current_python_version} runtime. '
+            f'Use Python {recommended_python} for the Spark adapter.'
+        )
         spark_mode = 'unavailable'
 
     return {
@@ -110,12 +124,15 @@ def get_engine_capabilities() -> Dict[str, Dict[str, Any]]:
             'available': True,
             'mode': 'in_process',
             'reason': 'Default reference execution engine.',
+            'current_python': current_python_version,
         },
         'spark': {
             'available': spark_available,
             'mode': spark_mode,
             'reason': spark_reason,
             'alternate_python': alt_python if spark_mode == 'external_python' else None,
+            'current_python': current_python_version,
+            'recommended_python': recommended_python,
         },
     }
 
@@ -193,9 +210,11 @@ def _run_dimension_rule_packs(context: Dict) -> Dict[str, Dict]:
     downstream_metrics = context.get('downstream_metrics', {})
 
     source_count = max(1, len(source_records))
+    reference_majority = bool(source_records) and sum(1 for row in source_records if _record_semantics(row) == 'reference') >= (len(source_records) / 2)
 
     out_of_order_rate = float(downstream_metrics.get('out_of_order', 0.0))
-    out_of_order_rows = int(round(out_of_order_rate * len(source_records)))
+    out_of_order_rows = 0 if reference_majority else int(round(out_of_order_rate * len(source_records)))
+    timeliness_findings = 0 if reference_majority else int(ingestion_metrics.get('freshness_issues', 0)) + out_of_order_rows
 
     invalid_time_rows = 0
     invalid_amount_rows = 0
@@ -222,7 +241,7 @@ def _run_dimension_rule_packs(context: Dict) -> Dict[str, Dict]:
         'consistency': int(storage_metrics.get('row_count_mismatch', 0)) + out_of_order_rows,
         'validity': invalid_time_rows + invalid_amount_rows,
         'uniqueness': _count_duplicate_event_ids(transformed_records),
-        'timeliness': int(ingestion_metrics.get('freshness_issues', 0)) + out_of_order_rows,
+        'timeliness': timeliness_findings,
         'integrity': int(storage_metrics.get('checksum_mismatch', 0)) + (0 if downstream_metrics.get('reconciliation', False) else 1),
         'reliability': int(preprocess_metrics.get('type_mismatches', 0)) + int(transform_metrics.get('transformation_failures', 0)),
         'traceability_governance': missing_trace_rows + int(ingestion_metrics.get('invalid_schema', 0)),
@@ -466,8 +485,7 @@ def _transform_resilient(records: List[Dict], policy: Dict[str, Any], resilience
                 error=error,
                 attempts=attempts,
             )
-    if not duplicate_check(transformed):
-        metrics['mapping_issues'] += 1
+    metrics['mapping_issues'] = _count_duplicate_event_ids(transformed)
     return transformed, metrics
 
 
@@ -488,7 +506,7 @@ def ingestion(orders: List[Dict], mode: str = 'batch') -> Tuple[List[Dict], Dict
             metrics['invalid_event_time'] += 1
             metrics['invalid_schema'] += 1
             continue
-        if (now - event_time).total_seconds() > 86400:
+        if _record_semantics(o) != 'reference' and (now - event_time).total_seconds() > 86400:
             metrics['freshness_issues'] += 1
         valid.append(o)
     return valid, metrics
@@ -515,8 +533,7 @@ def transform(records: List[Dict]) -> Tuple[List[Dict], Dict]:
             transformed.append(row)
         except Exception:
             metrics['transformation_failures'] += 1
-    if not duplicate_check(transformed):
-        metrics['mapping_issues'] += 1
+    metrics['mapping_issues'] = _count_duplicate_event_ids(transformed)
     return transformed, metrics
 
 
@@ -542,9 +559,8 @@ def storage(records: List[Dict], db_path: str = ':memory:') -> Tuple[Dict, Dict]
         metrics['stored'] += 1
     results = conn.execute('SELECT COUNT(*) FROM orders_curated').fetchone()[0]
     if results != len(records):
-        metrics['row_count_mismatch'] = 1
-    if not checksum_check(records):
-        metrics['checksum_mismatch'] = 1
+        metrics['row_count_mismatch'] = abs(results - len(records))
+    metrics['checksum_mismatch'] = checksum_mismatch_count(records)
     conn.close()
     return metrics, {'stored_rows': results}
 
@@ -587,6 +603,7 @@ def _finalize_proposed_metrics(
                                                  + ingestion_metrics.get('nulls', 0)
                                                  + preprocess_metrics.get('type_mismatches', 0)
                                                  + transform_metrics.get('transformation_failures', 0)
+                                                 + transform_metrics.get('mapping_issues', 0)
                                                  + storage_metrics.get('row_count_mismatch', 0)
                                                  + storage_metrics.get('checksum_mismatch', 0))
     stage_metrics['checkpoint_flow'] = checkpoint_flow
@@ -775,7 +792,7 @@ def _run_spark_batch_internal(orders: List[Dict], db_path: str, sector: str, pol
             transformed = [row.asDict() for row in transformed_df.collect()]
             transform_metrics = {
                 'transformation_failures': 0,
-                'mapping_issues': 0 if duplicate_check(transformed) else 1,
+                'mapping_issues': _count_duplicate_event_ids(transformed),
             }
             checkpoint_flow.append(_snapshot_checkpoint('transformation', transformed))
 

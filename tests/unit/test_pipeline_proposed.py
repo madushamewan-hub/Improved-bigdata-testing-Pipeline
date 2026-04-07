@@ -13,6 +13,7 @@ def test_proposed_detects_corruption():
     metrics = run_batch(faulty)
     assert metrics['proposed_detected_issues'] is not None
     assert metrics['proposed_stored_rows'] <= metrics['source_count']
+    assert metrics.get('checksum_mismatch', 0) > 1
 
 
 def test_proposed_sector_target_evaluation_exists():
@@ -61,6 +62,37 @@ def test_proposed_streaming_resilience_rollup_exists():
     assert 'checkpoint_flow' in metrics
     assert 'quarantine_records' in metrics
     assert metrics.get('retry_attempts', 0) >= 2
+
+
+def test_reference_records_do_not_get_timeliness_penalty():
+    data = [
+        {
+            'event_id': 'patient-001',
+            'event_time': '1977-03-19',
+            'customer_id': 'patient-001',
+            'source_system': 'csv',
+            'amount': 0.0,
+            'status': 'observed',
+            'version': 1,
+            'checksum': 'ok-1',
+            'record_semantics': 'reference',
+        },
+        {
+            'event_id': 'patient-002',
+            'event_time': '1940-02-19',
+            'customer_id': 'patient-002',
+            'source_system': 'csv',
+            'amount': 0.0,
+            'status': 'observed',
+            'version': 1,
+            'checksum': 'ok-2',
+            'record_semantics': 'reference',
+        },
+    ]
+
+    metrics = run_batch(data, engine='python')
+
+    assert metrics['dimension_scores']['timeliness'] == 1.0
 
 
 def test_proposed_python_engine_label_exists():

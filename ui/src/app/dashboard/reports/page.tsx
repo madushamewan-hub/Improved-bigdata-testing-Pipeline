@@ -10,10 +10,13 @@ export default function Reports() {
     const res = await fetch('http://localhost:8000/api/experiments')
     const data = await res.json()
     const csv = [
-      ['Experiment ID', 'Scenario', 'Engine', 'Proposed Accuracy', 'Composite Score', 'Sector Compliance'],
+      ['Experiment ID', 'Dataset', 'Scenario', 'Detection', 'Actual Amended Rows', 'Engine', 'Proposed Accuracy', 'Composite Score', 'Sector Compliance'],
       ...data.map((e: any) => [
         e.id,
+        e.dataset_name || `Dataset ${e.dataset_id}`,
         e.scenario,
+        e.detection_label || e.scenario,
+        e.scenario_amended_count || 0,
         e.engine || 'python',
         ((e.proposed_accuracy || 0) * 100).toFixed(1) + '%',
         ((e.proposed_composite_score || 0) * 100).toFixed(1) + '%',
@@ -41,10 +44,13 @@ export default function Reports() {
 
   const downloadCSV = () => {
     const csv = [
-      ['Experiment ID', 'Scenario', 'Baseline Accuracy', 'Proposed Accuracy', 'Improvement', 'Proposed Composite Score', 'Proposed Sector Compliance'],
+      ['Experiment ID', 'Dataset', 'Scenario', 'Detection', 'Actual Amended Rows', 'Baseline Accuracy', 'Proposed Accuracy', 'Improvement', 'Proposed Composite Score', 'Proposed Sector Compliance'],
       ...experiments.map(e => [
         e.id,
+        e.dataset_name || `Dataset ${e.dataset_id}`,
         e.scenario,
+        e.detection_label || e.scenario,
+        e.scenario_amended_count || 0,
         (e.baseline_accuracy * 100).toFixed(1) + '%',
         (e.proposed_accuracy * 100).toFixed(1) + '%',
         ((e.proposed_accuracy - e.baseline_accuracy) * 100).toFixed(1) + '%',
@@ -73,6 +79,10 @@ export default function Reports() {
     a.href = url
     a.download = 'experiment_results.json'
     a.click()
+  }
+
+  const downloadRunWorkbook = (experimentId: number) => {
+    window.open(`http://localhost:8000/api/experiments/${experimentId}/export.xlsx`, '_blank')
   }
 
   return (
@@ -156,6 +166,47 @@ export default function Reports() {
               <p className="text-xs text-violet-100">Python vs Spark comparison summary for experiment runs</p>
             </div>
           </button>
+        </div>
+      </div>
+
+      {/* Per-run Excel exports */}
+      <div className="bg-white rounded-lg shadow p-6">
+        <h2 className="text-xl font-bold text-gray-900 mb-4">Per-Run Excel Exports</h2>
+        <p className="text-sm text-gray-600 mb-4">Each workbook contains two sheets: `baseline` and `proposed`, with a detection column for the issue type detected in that experiment.</p>
+        <div className="overflow-x-auto">
+          <table className="min-w-full text-sm">
+            <thead className="bg-gray-100">
+              <tr>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">ID</th>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">Dataset</th>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">Scenario</th>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">Detection</th>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">Actual Amended Rows</th>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">Engine</th>
+                <th className="px-4 py-2 text-left font-semibold text-gray-700">Action</th>
+              </tr>
+            </thead>
+            <tbody className="divide-y">
+              {experiments.map((exp) => (
+                <tr key={exp.id} className="hover:bg-gray-50">
+                  <td className="px-4 py-3 text-gray-900">#{exp.id}</td>
+                  <td className="px-4 py-3 text-gray-700">{exp.dataset_name || `Dataset ${exp.dataset_id}`}</td>
+                  <td className="px-4 py-3 text-gray-700">{exp.scenario}</td>
+                  <td className="px-4 py-3 text-gray-700">{exp.detection_label || exp.scenario}</td>
+                  <td className="px-4 py-3 text-gray-700">{exp.scenario_amended_count || 0}</td>
+                  <td className="px-4 py-3 text-gray-700">{exp.engine || 'python'}</td>
+                  <td className="px-4 py-3">
+                    <button
+                      onClick={() => downloadRunWorkbook(exp.id)}
+                      className="bg-emerald-600 text-white px-3 py-2 rounded-lg font-semibold hover:bg-emerald-700"
+                    >
+                      Download Excel
+                    </button>
+                  </td>
+                </tr>
+              ))}
+            </tbody>
+          </table>
         </div>
       </div>
 

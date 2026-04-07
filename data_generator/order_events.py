@@ -38,8 +38,16 @@ def generate_base_orders(n: int, start_time: datetime = None, seed: int = 42) ->
 
 
 def inject_missing(orders: List[Dict], missing_rate: float = 0.1) -> List[Dict]:
-    keep = [o for o in orders if random.random() > missing_rate]
-    return keep
+    result = []
+    candidate_fields = ['event_time', 'customer_id', 'amount', 'status']
+    for o in orders:
+        row = dict(o)
+        if random.random() < missing_rate:
+            field = random.choice(candidate_fields)
+            row[field] = None
+            row['checksum'] = None
+        result.append(row)
+    return result
 
 
 def inject_duplicates(orders: List[Dict], duplicate_rate: float = 0.1) -> List[Dict]:

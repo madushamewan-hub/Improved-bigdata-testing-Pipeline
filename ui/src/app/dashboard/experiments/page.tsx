@@ -121,6 +121,79 @@ const METRIC_EXPLANATIONS: Record<string, { name: string; definition: string; in
   }
 }
 
+type ScenarioMetricKey = 'detected_duplicates' | 'detected_loss' | 'detected_corruption' | 'detected_inconsistency'
+
+const getTotalDetectedIssues = (pipeline: any) => (
+  (pipeline?.detected_duplicates ?? 0)
+  + (pipeline?.detected_loss ?? 0)
+  + (pipeline?.detected_corruption ?? 0)
+  + (pipeline?.detected_inconsistency ?? 0)
+)
+
+const getScenarioSummaryConfig = (scenarioName: string, detectionLabel?: string) => {
+  switch (scenarioName) {
+    case 'duplicated':
+      return {
+        metricKey: 'detected_duplicates' as ScenarioMetricKey,
+        title: 'Duplicate Rows Detected',
+        description: 'Rows flagged as duplicates for this duplication test.'
+      }
+    case 'dropped':
+      return {
+        metricKey: 'detected_loss' as ScenarioMetricKey,
+        title: 'Dropped Rows Detected',
+        description: 'Rows flagged as missing, dropped, or null-affected.'
+      }
+    case 'corrupted':
+      return {
+        metricKey: 'detected_corruption' as ScenarioMetricKey,
+        title: 'Corrupted Rows Detected',
+        description: 'Rows flagged with invalid or corrupted values.'
+      }
+    case 'schema_drift':
+      return {
+        metricKey: 'detected_inconsistency' as ScenarioMetricKey,
+        title: 'Schema Issues Detected',
+        description: 'Schema mismatches and downstream inconsistencies found.'
+      }
+    case 'out_of_order':
+      return {
+        metricKey: 'detected_inconsistency' as ScenarioMetricKey,
+        title: 'Ordering Issues Detected',
+        description: 'Ordering or downstream consistency issues found for sequence drift.'
+      }
+    case 'mixed':
+      return {
+        metricKey: null,
+        title: 'Mixed-Issue Findings',
+        description: 'Combined findings across duplicates, loss, corruption, and inconsistency.'
+      }
+    case 'clean':
+      return {
+        metricKey: null,
+        title: 'Unexpected Issues Detected',
+        description: 'Any issues detected in clean synthetic data should be reviewed.'
+      }
+    case 'real_world':
+      return {
+        metricKey: null,
+        title: detectionLabel ? `${detectionLabel.replace(/^./, (char) => char.toUpperCase())}` : 'Detected Quality Issues',
+        description: 'Quality findings detected in the uploaded dataset with no synthetic injection.'
+      }
+    default:
+      return {
+        metricKey: null,
+        title: detectionLabel ? `${detectionLabel.replace(/^./, (char) => char.toUpperCase())}` : 'Detected Issues',
+        description: 'Scenario-specific findings detected by the pipeline.'
+      }
+  }
+}
+
+const getScenarioDetectedCount = (pipeline: any, scenarioName: string) => {
+  const config = getScenarioSummaryConfig(scenarioName)
+  return config.metricKey ? (pipeline?.[config.metricKey] ?? 0) : getTotalDetectedIssues(pipeline)
+}
+
 // Progress component to show pipeline execution stages
 const ProgressLoading = ({ mode, baselineStage, proposedStage, totalProgress }: any) => {
   return (
@@ -259,6 +332,12 @@ export default function Experiments() {
   const [baselineStage, setBaselineStage] = useState<number>(0)
   const [proposedStage, setProposedStage] = useState<number>(0)
   const [totalProgress, setTotalProgress] = useState<number>(0)
+
+  const activeScenario = result?.scenario || scenario
+  const scenarioSummary = getScenarioSummaryConfig(activeScenario, result?.detection_label)
+  const baselineScenarioCount = getScenarioDetectedCount(result?.baseline, activeScenario)
+  const proposedScenarioCount = getScenarioDetectedCount(result?.proposed, activeScenario)
+  const proposedOtherCount = Math.max(0, getTotalDetectedIssues(result?.proposed) - proposedScenarioCount)
 
   useEffect(() => {
     Promise.all([
@@ -560,8 +639,21 @@ export default function Experiments() {
                     </div>
                   </label>
                 </div>
-                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-700">
-                  Engine selection applies to the proposed pipeline path. Baseline remains the lightweight reference comparator.
+                <div className="bg-slate-50 border border-slate-200 rounded-lg p-3 text-xs text-slate-700 space-y-1">
+                  <p>Engine selection applies to the proposed pipeline path. Baseline remains the lightweight reference comparator.</p>
+                  <p>
+                    <strong>Backend Python environment:</strong>{' '}
+                    {engineCapabilities?.spark?.current_python || engineCapabilities?.python?.current_python || 'unknown'}
+                  </p>
+                  <p>
+                    <strong>Spark requirement:</strong> the Spark adapter is enabled only when the backend is running on a compatible Python{' '}
+                    {engineCapabilities?.spark?.recommended_python || '3.11/3.12'} runtime, or when <code>SPARK_PYTHON_EXECUTABLE</code> points to one.
+                  </p>
+                  {!engineCapabilities?.spark?.available && (
+                    <p className="text-amber-700">
+                      If Spark is disabled, the active backend Python version does not match the required runtime or the alternate Spark Python path is not configured.
+                    </p>
+                  )}
                 </div>
               </div>
 
@@ -603,6 +695,7 @@ export default function Experiments() {
         <div className="space-y-6">
           <div className="bg-green-50 border border-green-200 rounded-lg p-4">
             <p className="text-green-800 font-semibold">✓ Experiment completed!</p>
+            <p className="text-sm text-green-700 mt-1">Detection label: <span className="font-semibold">{result.detection_label || result.scenario}</span> • Actual amended rows: <span className="font-semibold">{result.actual_amended_count || 0}</span></p>
           </div>
 
           {/* Processing Mode Warning */}
@@ -644,59 +737,89 @@ export default function Experiments() {
           </div>
 
           {result.proposed && (
-            <div className="bg-white rounded-lg shadow p-6 border border-emerald-200">
-              <div className="flex items-center justify-between mb-4">
-                <h3 className="font-bold text-gray-900">Advanced Evaluation (Step 1-4)</h3>
-                <button
-                  type="button"
-                  onClick={() => setShowAdvancedInfo(prev => !prev)}
-                  className="text-sm px-3 py-1 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
-                  title="Show score meanings"
-                >
-                  ℹ️ Score Meaning
-                </button>
-              </div>
-
-              {showAdvancedInfo && (
-                <div className="mb-4 bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-700 space-y-2">
-                  <p><strong>Composite Score</strong> combines dimension quality and sector target performance.</p>
-                  <p><strong>Formula:</strong> Composite = 0.6 × Dimension Average + 0.4 × Sector Compliance.</p>
-                  <p><strong>Dimension Average</strong> is the mean score across the 9 core dimensions (accuracy, completeness, consistency, validity, uniqueness, timeliness, integrity, reliability, traceability/governance).</p>
-                  <p><strong>Sector Compliance</strong> reflects pass-rate and attainment against the 15 advanced metric targets for the selected sector profile.</p>
-                  <p><strong>Interpretation:</strong> 90-100% excellent, 75-89% strong, 60-74% moderate, below 60% needs improvement.</p>
-                </div>
-              )}
-
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
-                  <p className="text-xs text-emerald-800 font-semibold">Composite Score</p>
-                  <p className="text-2xl font-bold text-emerald-700 mt-1">{((result.proposed.composite_score || 0) * 100).toFixed(1)}%</p>
-                  <p className="text-xs text-emerald-700 mt-1">{result.proposed.composite_formula || '0.6*dimension_average + 0.4*sector_compliance'}</p>
-                </div>
-                <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
-                  <p className="text-xs text-blue-800 font-semibold">Dimension Average</p>
-                  <p className="text-2xl font-bold text-blue-700 mt-1">{((result.proposed.dimension_average_score || 0) * 100).toFixed(1)}%</p>
-                  <p className="text-xs text-blue-700 mt-1">9-core-dimension aggregate</p>
-                </div>
-                <div className="bg-violet-50 rounded-lg p-4 border border-violet-200">
-                  <p className="text-xs text-violet-800 font-semibold">Sector Compliance</p>
-                  <p className="text-2xl font-bold text-violet-700 mt-1">{((result.proposed.sector_compliance_score || 0) * 100).toFixed(1)}%</p>
-                  <p className="text-xs text-violet-700 mt-1">Sector: {(result.proposed.sector || 'cross_industry').replace(/_/g, ' ')}</p>
+            <div className="space-y-6">
+              <div className="bg-white rounded-lg shadow p-6 border border-sky-200">
+                <h3 className="font-bold text-gray-900 mb-4">Issue Counts: Injected vs Detected</h3>
+                <div className="grid grid-cols-1 md:grid-cols-4 gap-4">
+                  <div className="bg-sky-50 rounded-lg p-4 border border-sky-200">
+                    <p className="text-xs text-sky-800 font-semibold">Actual Amended Rows</p>
+                    <p className="text-2xl font-bold text-sky-700 mt-1">{result.actual_amended_count || 0}</p>
+                    <p className="text-xs text-sky-700 mt-1">Rows actually changed by the selected scenario</p>
+                  </div>
+                  {result.baseline && (
+                    <div className="bg-orange-50 rounded-lg p-4 border border-orange-200">
+                      <p className="text-xs text-orange-800 font-semibold">Baseline {scenarioSummary.title}</p>
+                      <p className="text-2xl font-bold text-orange-700 mt-1">{baselineScenarioCount}</p>
+                      <p className="text-xs text-orange-700 mt-1">{scenarioSummary.description}</p>
+                    </div>
+                  )}
+                  <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                    <p className="text-xs text-emerald-800 font-semibold">Proposed {scenarioSummary.title}</p>
+                    <p className="text-2xl font-bold text-emerald-700 mt-1">{proposedScenarioCount}</p>
+                    <p className="text-xs text-emerald-700 mt-1">{scenarioSummary.description}</p>
+                  </div>
+                  <div className="bg-violet-50 rounded-lg p-4 border border-violet-200">
+                    <p className="text-xs text-violet-800 font-semibold">Other Detected Issues</p>
+                    <p className="text-2xl font-bold text-violet-700 mt-1">{proposedOtherCount}</p>
+                    <p className="text-xs text-violet-700 mt-1">Additional findings outside the primary selected scenario.</p>
+                  </div>
                 </div>
               </div>
-              <div className="mt-3 text-xs text-gray-600">Engine used: <span className="font-semibold text-gray-900">{(result.proposed.engine || result.engine || engine || 'python').replace(/_/g, ' ')}</span></div>
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
-                <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
-                  <p className="text-xs text-gray-600 font-semibold">Retry Attempts</p>
-                  <p className="text-lg font-bold text-gray-900 mt-1">{result.proposed.retry_attempts || 0}</p>
+
+              <div className="bg-white rounded-lg shadow p-6 border border-emerald-200">
+                <div className="flex items-center justify-between mb-4">
+                  <h3 className="font-bold text-gray-900">Advanced Evaluation (Step 1-4)</h3>
+                  <button
+                    type="button"
+                    onClick={() => setShowAdvancedInfo(prev => !prev)}
+                    className="text-sm px-3 py-1 rounded-full border border-gray-300 text-gray-700 hover:bg-gray-50"
+                    title="Show score meanings"
+                  >
+                    ℹ️ Score Meaning
+                  </button>
                 </div>
-                <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
-                  <p className="text-xs text-amber-700 font-semibold">Quarantine Count</p>
-                  <p className="text-lg font-bold text-amber-800 mt-1">{result.proposed.quarantine_count || 0}</p>
+
+                {showAdvancedInfo && (
+                  <div className="mb-4 bg-slate-50 border border-slate-200 rounded-lg p-4 text-sm text-slate-700 space-y-2">
+                    <p><strong>Composite Score</strong> combines dimension quality and sector target performance.</p>
+                    <p><strong>Formula:</strong> Composite = 0.6 × Dimension Average + 0.4 × Sector Compliance.</p>
+                    <p><strong>Dimension Average</strong> is the mean score across the 9 core dimensions (accuracy, completeness, consistency, validity, uniqueness, timeliness, integrity, reliability, traceability/governance).</p>
+                    <p><strong>Sector Compliance</strong> reflects pass-rate and attainment against the 15 advanced metric targets for the selected sector profile.</p>
+                    <p><strong>Interpretation:</strong> 90-100% excellent, 75-89% strong, 60-74% moderate, below 60% needs improvement.</p>
+                  </div>
+                )}
+
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
+                  <div className="bg-emerald-50 rounded-lg p-4 border border-emerald-200">
+                    <p className="text-xs text-emerald-800 font-semibold">Composite Score</p>
+                    <p className="text-2xl font-bold text-emerald-700 mt-1">{((result.proposed.composite_score || 0) * 100).toFixed(1)}%</p>
+                    <p className="text-xs text-emerald-700 mt-1">{result.proposed.composite_formula || '0.6*dimension_average + 0.4*sector_compliance'}</p>
+                  </div>
+                  <div className="bg-blue-50 rounded-lg p-4 border border-blue-200">
+                    <p className="text-xs text-blue-800 font-semibold">Dimension Average</p>
+                    <p className="text-2xl font-bold text-blue-700 mt-1">{((result.proposed.dimension_average_score || 0) * 100).toFixed(1)}%</p>
+                    <p className="text-xs text-blue-700 mt-1">9-core-dimension aggregate</p>
+                  </div>
+                  <div className="bg-violet-50 rounded-lg p-4 border border-violet-200">
+                    <p className="text-xs text-violet-800 font-semibold">Sector Compliance</p>
+                    <p className="text-2xl font-bold text-violet-700 mt-1">{((result.proposed.sector_compliance_score || 0) * 100).toFixed(1)}%</p>
+                    <p className="text-xs text-violet-700 mt-1">Sector: {(result.proposed.sector || 'cross_industry').replace(/_/g, ' ')}</p>
+                  </div>
                 </div>
-                <div className="bg-cyan-50 rounded-lg p-3 border border-cyan-200">
-                  <p className="text-xs text-cyan-700 font-semibold">Checkpoint Recoveries</p>
-                  <p className="text-lg font-bold text-cyan-800 mt-1">{result.proposed.checkpoint_recoveries || 0}</p>
+                <div className="mt-3 text-xs text-gray-600">Engine used: <span className="font-semibold text-gray-900">{(result.proposed.engine || result.engine || engine || 'python').replace(/_/g, ' ')}</span></div>
+                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+                  <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
+                    <p className="text-xs text-gray-600 font-semibold">Retry Attempts</p>
+                    <p className="text-lg font-bold text-gray-900 mt-1">{result.proposed.retry_attempts || 0}</p>
+                  </div>
+                  <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
+                    <p className="text-xs text-amber-700 font-semibold">Quarantine Count</p>
+                    <p className="text-lg font-bold text-amber-800 mt-1">{result.proposed.quarantine_count || 0}</p>
+                  </div>
+                  <div className="bg-cyan-50 rounded-lg p-3 border border-cyan-200">
+                    <p className="text-xs text-cyan-700 font-semibold">Checkpoint Recoveries</p>
+                    <p className="text-lg font-bold text-cyan-800 mt-1">{result.proposed.checkpoint_recoveries || 0}</p>
+                  </div>
                 </div>
               </div>
             </div>
@@ -719,24 +842,34 @@ export default function Experiments() {
               <div className="space-y-2 text-gray-700 text-sm">
                 <p>✓ Accuracy improvement: <span className="font-bold text-green-600">{((result.proposed.accuracy - result.baseline.accuracy) * 100).toFixed(1)}%</span></p>
                 <p>✓ False negatives reduced: <span className="font-bold text-green-600">{result.baseline.false_negatives - result.proposed.false_negatives}</span></p>
+                <p>🔢 Actual amended rows: <span className="font-bold text-blue-700">{result.actual_amended_count || 0}</span></p>
+                <p>🧪 Proposed {scenarioSummary.title.toLowerCase()}: <span className="font-bold text-emerald-700">{proposedScenarioCount}</span></p>
                 <p>⚠ Latency overhead: <span className="font-bold text-yellow-600">{result.proposed.overhead.toFixed(0)}ms</span></p>
                 <p>⭐ Composite score: <span className="font-bold text-emerald-700">{((result.proposed.composite_score || 0) * 100).toFixed(1)}%</span></p>
               </div>
             </div>
           )}
 
-          <button
-            onClick={() => { 
-              setResult(null); 
-              setSelectedDataset(null);
-              setForceFullScan(false);
-              setEngine('python');
-              setShowAdvancedInfo(false);
-            }}
-            className="bg-gray-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-700"
-          >
-            Run Another Experiment
-          </button>
+          <div className="flex flex-wrap gap-3">
+            <button
+              onClick={() => window.open(`http://localhost:8000/api/experiments/${result.id}/export.xlsx`, '_blank')}
+              className="bg-emerald-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-emerald-700"
+            >
+              Download Excel Report
+            </button>
+            <button
+              onClick={() => { 
+                setResult(null); 
+                setSelectedDataset(null);
+                setForceFullScan(false);
+                setEngine('python');
+                setShowAdvancedInfo(false);
+              }}
+              className="bg-gray-600 text-white px-6 py-2 rounded-lg font-semibold hover:bg-gray-700"
+            >
+              Run Another Experiment
+            </button>
+          </div>
         </div>
       )}
     </div>
