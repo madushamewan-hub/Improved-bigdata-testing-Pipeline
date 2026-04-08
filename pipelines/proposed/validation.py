@@ -1,23 +1,76 @@
-from typing import Dict, List
+from datetime import datetime
+from typing import Any, Dict, List, Tuple
 
 REQUIRED_FIELDS = ['event_id', 'event_time', 'customer_id', 'source_system', 'amount', 'status', 'version', 'checksum']
 
 
+class ValidationClassificationError(Exception):
+    """Base class for record validation classification errors."""
+
+
+class TypeMismatchError(ValidationClassificationError):
+    """Raised when a record has the required fields but incompatible types."""
+
+
+class MalformedRecordError(ValidationClassificationError):
+    """Raised when a record is structurally present but content is malformed."""
+
+
 def schema_validation(event: Dict) -> bool:
-    return all(field in event for field in REQUIRED_FIELDS)
+    return isinstance(event, dict) and all(field in event for field in REQUIRED_FIELDS)
 
 
 def null_check(event: Dict) -> bool:
     return all(event.get(field) is not None for field in REQUIRED_FIELDS)
 
 
+def malformed_payload_check(event: Dict[str, Any]) -> Tuple[bool, str]:
+    if not isinstance(event, dict):
+        return False, 'payload is not a mapping'
+
+    for field in ['event_id', 'event_time', 'customer_id', 'source_system', 'status', 'checksum']:
+        value = event.get(field)
+        if isinstance(value, str) and not value.strip():
+            return False, f'{field} is blank'
+
+    event_time = str(event.get('event_time', '')).strip()
+    if not event_time:
+        return False, 'event_time is blank'
+
+    try:
+        datetime.fromisoformat(event_time)
+    except Exception:
+        return False, 'event_time is invalid'
+
+    return True, ''
+
+
 def enforce_types(event: Dict) -> Dict:
-    assert isinstance(event['event_id'], str)
-    assert isinstance(event['event_time'], str)
-    assert isinstance(event['customer_id'], str)
-    event['amount'] = float(event['amount'])
-    event['version'] = int(event['version'])
-    return event
+    if not schema_validation(event):
+        raise MalformedRecordError('missing required fields')
+    if not null_check(event):
+        raise MalformedRecordError('required field is null')
+
+    payload_ok, reason = malformed_payload_check(event)
+    if not payload_ok:
+        raise MalformedRecordError(reason)
+
+    result = dict(event)
+    for field in ['event_id', 'event_time', 'customer_id', 'source_system', 'status', 'checksum']:
+        if not isinstance(result[field], str):
+            raise TypeMismatchError(f'{field} must be a string')
+
+    try:
+        result['amount'] = float(result['amount'])
+    except (TypeError, ValueError) as exc:
+        raise TypeMismatchError('amount must be numeric') from exc
+
+    try:
+        result['version'] = int(result['version'])
+    except (TypeError, ValueError) as exc:
+        raise TypeMismatchError('version must be an integer') from exc
+
+    return result
 
 
 def checksum_mismatch_count(events: List[Dict]) -> int:

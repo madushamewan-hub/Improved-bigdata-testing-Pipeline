@@ -194,6 +194,8 @@ const getScenarioDetectedCount = (pipeline: any, scenarioName: string) => {
   return config.metricKey ? (pipeline?.[config.metricKey] ?? 0) : getTotalDetectedIssues(pipeline)
 }
 
+const formatPercent = (value: number | null | undefined, decimals = 2) => `${Number(value ?? 0).toFixed(decimals)}%`
+
 // Progress component to show pipeline execution stages
 const ProgressLoading = ({ mode, baselineStage, proposedStage, totalProgress }: any) => {
   return (
@@ -785,6 +787,7 @@ export default function Experiments() {
                     <p><strong>Formula:</strong> Composite = 0.6 × Dimension Average + 0.4 × Sector Compliance.</p>
                     <p><strong>Dimension Average</strong> is the mean score across the 9 core dimensions (accuracy, completeness, consistency, validity, uniqueness, timeliness, integrity, reliability, traceability/governance).</p>
                     <p><strong>Sector Compliance</strong> reflects pass-rate and attainment against the 15 advanced metric targets for the selected sector profile.</p>
+                    <p><strong>Industry-Level Metrics</strong> below expose the exact thesis formulas for DDR, FPR, FNR, TRC, CCE, DA, RSR, and latency overhead.</p>
                     <p><strong>Interpretation:</strong> 90-100% excellent, 75-89% strong, 60-74% moderate, below 60% needs improvement.</p>
                   </div>
                 )}
@@ -807,10 +810,65 @@ export default function Experiments() {
                   </div>
                 </div>
                 <div className="mt-3 text-xs text-gray-600">Engine used: <span className="font-semibold text-gray-900">{(result.proposed.engine || result.engine || engine || 'python').replace(/_/g, ' ')}</span></div>
-                <div className="grid grid-cols-1 md:grid-cols-3 gap-4 mt-4">
+
+                <div className="mt-4">
+                  <p className="text-xs font-semibold text-slate-800 mb-3">Industry-Level Evaluation</p>
+                  <div className="grid grid-cols-1 md:grid-cols-2 xl:grid-cols-4 gap-3">
+                    <div className="bg-green-50 rounded-lg p-3 border border-green-200">
+                      <p className="text-xs text-green-800 font-semibold">DDR</p>
+                      <p className="text-lg font-bold text-green-700 mt-1">{formatPercent(result.proposed.defect_detection_rate, 2)}</p>
+                      <p className="text-[11px] text-green-700 mt-1">Detected integrity issues / total actual issues</p>
+                    </div>
+                    <div className="bg-rose-50 rounded-lg p-3 border border-rose-200">
+                      <p className="text-xs text-rose-800 font-semibold">FPR</p>
+                      <p className="text-lg font-bold text-rose-700 mt-1">{formatPercent(result.proposed.false_positive_rate, 2)}</p>
+                      <p className="text-[11px] text-rose-700 mt-1">Incorrectly flagged valid cases</p>
+                    </div>
+                    <div className="bg-orange-50 rounded-lg p-3 border border-orange-200">
+                      <p className="text-xs text-orange-800 font-semibold">FNR</p>
+                      <p className="text-lg font-bold text-orange-700 mt-1">{formatPercent(result.proposed.false_negative_rate, 2)}</p>
+                      <p className="text-[11px] text-orange-700 mt-1">Missed integrity issues</p>
+                    </div>
+                    <div className="bg-blue-50 rounded-lg p-3 border border-blue-200">
+                      <p className="text-xs text-blue-800 font-semibold">TRC</p>
+                      <p className="text-lg font-bold text-blue-700 mt-1">{formatPercent(result.proposed.transformation_rule_coverage, 2)}</p>
+                      <p className="text-[11px] text-blue-700 mt-1">Validated transformation rules / total rules</p>
+                    </div>
+                    <div className="bg-cyan-50 rounded-lg p-3 border border-cyan-200">
+                      <p className="text-xs text-cyan-800 font-semibold">CCE</p>
+                      <p className="text-lg font-bold text-cyan-700 mt-1">{formatPercent(result.proposed.completeness_check_effectiveness, 2)}</p>
+                      <p className="text-[11px] text-cyan-700 mt-1">Correctly detected incomplete records</p>
+                    </div>
+                    <div className="bg-violet-50 rounded-lg p-3 border border-violet-200">
+                      <p className="text-xs text-violet-800 font-semibold">DA</p>
+                      <p className="text-lg font-bold text-violet-700 mt-1">{formatPercent(result.proposed.deduplication_accuracy, 2)}</p>
+                      <p className="text-[11px] text-violet-700 mt-1">Correct duplicate decisions</p>
+                    </div>
+                    <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
+                      <p className="text-xs text-amber-800 font-semibold">RSR</p>
+                      <p className="text-lg font-bold text-amber-700 mt-1">{formatPercent(result.proposed.recovery_success_rate, 2)}</p>
+                      <p className="text-[11px] text-amber-700 mt-1">Successful recoveries / recovery attempts</p>
+                    </div>
+                    <div className="bg-slate-50 rounded-lg p-3 border border-slate-200">
+                      <p className="text-xs text-slate-800 font-semibold">Latency Overhead</p>
+                      <p className="text-lg font-bold text-slate-700 mt-1">{formatPercent(result.proposed.latency_overhead_percent, 2)}</p>
+                      <p className="text-[11px] text-slate-700 mt-1">Relative to baseline latency</p>
+                    </div>
+                  </div>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-5 gap-4 mt-4">
                   <div className="bg-gray-50 rounded-lg p-3 border border-gray-200">
                     <p className="text-xs text-gray-600 font-semibold">Retry Attempts</p>
                     <p className="text-lg font-bold text-gray-900 mt-1">{result.proposed.retry_attempts || 0}</p>
+                  </div>
+                  <div className="bg-indigo-50 rounded-lg p-3 border border-indigo-200">
+                    <p className="text-xs text-indigo-700 font-semibold">Recovery Attempts</p>
+                    <p className="text-lg font-bold text-indigo-800 mt-1">{result.proposed.recovery_attempts || 0}</p>
+                  </div>
+                  <div className="bg-emerald-50 rounded-lg p-3 border border-emerald-200">
+                    <p className="text-xs text-emerald-700 font-semibold">Successful Recoveries</p>
+                    <p className="text-lg font-bold text-emerald-800 mt-1">{result.proposed.successful_recoveries || 0}</p>
                   </div>
                   <div className="bg-amber-50 rounded-lg p-3 border border-amber-200">
                     <p className="text-xs text-amber-700 font-semibold">Quarantine Count</p>

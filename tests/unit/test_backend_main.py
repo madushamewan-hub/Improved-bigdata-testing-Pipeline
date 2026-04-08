@@ -152,3 +152,53 @@ def test_derive_proposed_result_metrics_uses_schema_drift_signals_for_inconsiste
     )
 
     assert derived['detected_inconsistency'] == 9
+
+
+def test_derive_proposed_result_metrics_includes_exact_evaluation_formulas():
+    derived = _derive_proposed_result_metrics(
+        {
+            'proposed_detected_issues': 8,
+            'stored_rows': 92,
+            'false_positives': 2,
+            'nulls': 3,
+            'type_mismatches': 1,
+            'transformation_failures': 1,
+            'row_count_mismatch': 0,
+            'invalid_schema': 0,
+            'checksum_mismatch': 1,
+            'mapping_issues': 4,
+            'recovery_attempts': 5,
+            'successful_recoveries': 4,
+            'check_evidence': [
+                {'check_id': 'type_enforcement'},
+                {'check_id': 'transformation_validation'},
+                {'check_id': 'duplicate_mapping_check'},
+            ],
+        },
+        row_count=100,
+        latency_ms=150.0,
+        evaluation_context={
+            'actual_integrity_issues': 10,
+            'valid_cases': 90,
+            'total_incomplete_records': 5,
+            'correctly_detected_incomplete_records': 3,
+            'total_duplicate_evaluation_cases': 5,
+            'correct_duplicate_decisions': 4,
+            'total_transformation_rules': 3,
+            'validated_transformation_rules': 3,
+            'recovery_attempts': 5,
+            'successful_recoveries': 4,
+            'baseline_latency_ms': 100.0,
+        },
+    )
+
+    evaluation = derived['evaluation_metrics']
+
+    assert evaluation['defect_detection_rate'] == 80.0
+    assert evaluation['false_positive_rate'] == 2.22
+    assert evaluation['false_negative_rate'] == 20.0
+    assert evaluation['transformation_rule_coverage'] == 100.0
+    assert evaluation['completeness_check_effectiveness'] == 60.0
+    assert evaluation['deduplication_accuracy'] == 80.0
+    assert evaluation['recovery_success_rate'] == 80.0
+    assert evaluation['latency_overhead_percent'] == 50.0

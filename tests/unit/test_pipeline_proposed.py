@@ -101,6 +101,18 @@ def test_proposed_python_engine_label_exists():
     assert metrics.get('engine') == 'python'
 
 
+def test_proposed_separates_malformed_from_schema_and_type_failures():
+    data = generate_base_orders(6, seed=29)
+    data[0]['event_time'] = 'not-a-valid-timestamp'
+    data[1]['event_id'] = '   '
+
+    metrics = run_batch(data, engine='python')
+
+    assert metrics.get('malformed', 0) >= 2
+    assert metrics.get('invalid_schema', 0) == 0
+    assert metrics.get('type_mismatches', 0) == 0
+
+
 def test_proposed_invalid_engine_raises():
     data = generate_base_orders(5, seed=19)
     with pytest.raises(ValueError):

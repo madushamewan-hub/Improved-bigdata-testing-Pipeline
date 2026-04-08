@@ -184,6 +184,7 @@ def estimate_advanced_metric_scores(stage_metrics: Dict[str, Any]) -> Dict[str, 
 
     invalid_schema = float(stage_metrics.get('invalid_schema', 0))
     nulls = float(stage_metrics.get('nulls', 0))
+    malformed = float(stage_metrics.get('malformed', 0))
     type_mismatches = float(stage_metrics.get('type_mismatches', 0))
     transform_failures = float(stage_metrics.get('transformation_failures', 0))
     row_count_mismatch = float(stage_metrics.get('row_count_mismatch', 0))
@@ -193,7 +194,7 @@ def estimate_advanced_metric_scores(stage_metrics: Dict[str, Any]) -> Dict[str, 
 
     detected_issues = float(stage_metrics.get(
         'proposed_detected_issues',
-        invalid_schema + nulls + type_mismatches + transform_failures + row_count_mismatch + checksum_mismatch,
+        invalid_schema + nulls + malformed + type_mismatches + transform_failures + row_count_mismatch + checksum_mismatch,
     ))
 
     out_of_order = _clamp01(float(stage_metrics.get('out_of_order', 0.0)))
@@ -205,7 +206,7 @@ def estimate_advanced_metric_scores(stage_metrics: Dict[str, Any]) -> Dict[str, 
     accuracy_score = _clamp01(float(dimension_scores.get('accuracy', 1.0 - _safe_ratio(detected_issues, source_count, 0.0))))
     completeness_score = _clamp01(float(dimension_scores.get('completeness', 1.0 - _safe_ratio(nulls, source_count, 0.0))))
     consistency_score = _clamp01(float(dimension_scores.get('consistency', 1.0 - _safe_ratio(row_count_mismatch + out_of_order * source_count, source_count, 0.0))))
-    validity_score = _clamp01(float(dimension_scores.get('validity', 1.0 - _safe_ratio(type_mismatches + transform_failures, source_count, 0.0))))
+    validity_score = _clamp01(float(dimension_scores.get('validity', 1.0 - _safe_ratio(malformed + type_mismatches + transform_failures, source_count, 0.0))))
     uniqueness_score = _clamp01(float(dimension_scores.get('uniqueness', 1.0 - _safe_ratio(mapping_issues, source_count, 0.0))))
     timeliness_score = _clamp01(float(dimension_scores.get('timeliness', 1.0 - _safe_ratio(freshness_issues + out_of_order * source_count, source_count, 0.0))))
     integrity_score = _clamp01(float(dimension_scores.get('integrity', 1.0 - _safe_ratio(checksum_mismatch, source_count, 0.0))))

@@ -12,6 +12,11 @@ from data_generator.order_events import (
     inject_schema_drift,
     inject_out_of_order,
 )
+from backend.services.experiment_service import (
+    _build_evaluation_context,
+    _compute_exact_evaluation_metrics,
+    _compute_scenario_amended_count,
+)
 from pipelines.baseline.pipeline import run_batch as baseline_batch
 from pipelines.proposed.pipeline import run_batch as proposed_batch, get_engine_capabilities
 
@@ -38,19 +43,44 @@ def execute_scenario(name: str, source_data):
     proposed_latency = time.time() - start
 
     source_count = len(source_data)
+    scenario_amended_count = _compute_scenario_amended_count(source_data, injected, name)
+    evaluation_context = _build_evaluation_context(
+        source_data,
+        injected,
+        name,
+        prop_metrics,
+        baseline_latency_ms=baseline_latency,
+        pipeline_type='proposed',
+    )
+    evaluation_metrics = _compute_exact_evaluation_metrics(
+        prop_metrics,
+        len(injected),
+        proposed_latency,
+        evaluation_context=evaluation_context,
+    )
     detected_issues = (prop_metrics.get('invalid_schema', 0) + prop_metrics.get('nulls', 0) +
-                       prop_metrics.get('type_mismatches', 0) + prop_metrics.get('transformation_failures', 0) +
-                       prop_metrics.get('row_count_mismatch', 0) + prop_metrics.get('checksum_mismatch', 0))
+                       prop_metrics.get('malformed', 0) + prop_metrics.get('type_mismatches', 0) +
+                       prop_metrics.get('transformation_failures', 0) + prop_metrics.get('row_count_mismatch', 0) +
+                       prop_metrics.get('checksum_mismatch', 0))
 
     return {
         'scenario': name,
         'baseline_latency': baseline_latency,
         'proposed_latency': proposed_latency,
         'latency_overhead': proposed_latency - baseline_latency,
+        'latency_overhead_percent': evaluation_metrics.get('latency_overhead_percent', 0.0),
         'baseline_record_count': base_metrics.get('record_count', 0),
         'proposed_source_count': prop_metrics.get('source_count', 0),
         'proposed_stored_rows': prop_metrics.get('stored_rows', 0),
         'proposed_detected_issues': detected_issues,
+        'actual_integrity_issues': scenario_amended_count,
+        'defect_detection_rate': evaluation_metrics.get('defect_detection_rate', 0.0),
+        'false_positive_rate': evaluation_metrics.get('false_positive_rate', 0.0),
+        'false_negative_rate': evaluation_metrics.get('false_negative_rate', 0.0),
+        'transformation_rule_coverage': evaluation_metrics.get('transformation_rule_coverage', 0.0),
+        'completeness_check_effectiveness': evaluation_metrics.get('completeness_check_effectiveness', 0.0),
+        'deduplication_accuracy': evaluation_metrics.get('deduplication_accuracy', 0.0),
+        'recovery_success_rate': evaluation_metrics.get('recovery_success_rate', 0.0),
         'proposed_reconciliation': prop_metrics.get('downstream_reconciliation', False),
         'proposed_out_of_order_rate': prop_metrics.get('out_of_order', 0.0),
         'sector': prop_metrics.get('sector', 'cross_industry'),
@@ -58,12 +88,14 @@ def execute_scenario(name: str, source_data):
         'sector_compliance_score': prop_metrics.get('sector_compliance_score', 0.0),
         'composite_score': prop_metrics.get('composite_score', 0.0),
         'retry_attempts': prop_metrics.get('retry_attempts', 0),
+        'recovery_attempts': prop_metrics.get('recovery_attempts', 0),
+        'successful_recoveries': prop_metrics.get('successful_recoveries', 0),
         'quarantine_count': prop_metrics.get('quarantine_count', 0),
         'checkpoint_recoveries': prop_metrics.get('checkpoint_recoveries', 0),
-        'precision': 1.0 if detected_issues > 0 else 0.0,
-        'recall': float(detected_issues) / source_count if source_count > 0 else 0.0,
-        'false_positives': 0,
-        'false_negatives': max(0, source_count - prop_metrics.get('stored_rows', 0))
+        'precision': float(evaluation_metrics.get('detected_integrity_issues', detected_issues)) / max(1.0, float(evaluation_metrics.get('detected_integrity_issues', detected_issues)) + float(prop_metrics.get('false_positives', 0))),
+        'recall': evaluation_metrics.get('defect_detection_rate', 0.0) / 100.0,
+        'false_positives': prop_metrics.get('false_positives', 0),
+        'false_negatives': evaluation_metrics.get('missed_integrity_issues', max(0, source_count - prop_metrics.get('stored_rows', 0))),
     }
 
 

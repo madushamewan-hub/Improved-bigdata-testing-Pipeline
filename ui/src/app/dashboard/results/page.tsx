@@ -167,7 +167,7 @@ export default function Results() {
                   <span className="font-bold text-gray-800">{(expDetails.proposed.engine || expDetails.engine || 'python').replace(/_/g, ' ')}</span>
                 </div>
                 <div className="pt-2 mt-2 border-t border-green-200">
-                  <p className="text-xs font-semibold text-green-800 mb-2">Advanced Evaluation</p>
+                  <p className="text-xs font-semibold text-green-800 mb-2">Advanced / Industry-Level Evaluation</p>
                   <div className="flex justify-between">
                     <span className="text-gray-600">Composite Score:</span>
                     <span className="font-bold text-emerald-700">{((expDetails.proposed.composite_score || 0) * 100).toFixed(1)}%</span>
@@ -181,12 +181,52 @@ export default function Results() {
                     <span className="font-bold text-violet-700">{((expDetails.proposed.sector_compliance_score || 0) * 100).toFixed(1)}%</span>
                   </div>
                   <div className="flex justify-between">
+                    <span className="text-gray-600">DDR:</span>
+                    <span className="font-bold text-green-700">{Number(expDetails.proposed.defect_detection_rate || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">FPR:</span>
+                    <span className="font-bold text-rose-700">{Number(expDetails.proposed.false_positive_rate || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">FNR:</span>
+                    <span className="font-bold text-orange-700">{Number(expDetails.proposed.false_negative_rate || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">TRC:</span>
+                    <span className="font-bold text-blue-700">{Number(expDetails.proposed.transformation_rule_coverage || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">CCE:</span>
+                    <span className="font-bold text-cyan-700">{Number(expDetails.proposed.completeness_check_effectiveness || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">DA:</span>
+                    <span className="font-bold text-violet-700">{Number(expDetails.proposed.deduplication_accuracy || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">RSR:</span>
+                    <span className="font-bold text-amber-700">{Number(expDetails.proposed.recovery_success_rate || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Latency Overhead %:</span>
+                    <span className="font-bold text-slate-700">{Number(expDetails.proposed.latency_overhead_percent || 0).toFixed(2)}%</span>
+                  </div>
+                  <div className="flex justify-between">
                     <span className="text-gray-600">Sector:</span>
                     <span className="font-bold text-gray-800">{(expDetails.proposed.sector || 'cross_industry').replace(/_/g, ' ')}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-600">Retry Attempts:</span>
                     <span className="font-bold text-gray-800">{expDetails.proposed.retry_attempts || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Recovery Attempts:</span>
+                    <span className="font-bold text-indigo-700">{expDetails.proposed.recovery_attempts || 0}</span>
+                  </div>
+                  <div className="flex justify-between">
+                    <span className="text-gray-600">Successful Recoveries:</span>
+                    <span className="font-bold text-emerald-700">{expDetails.proposed.successful_recoveries || 0}</span>
                   </div>
                   <div className="flex justify-between">
                     <span className="text-gray-600">Quarantine Count:</span>
