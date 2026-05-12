@@ -11,11 +11,11 @@ DEFAULT_RESILIENCE_POLICY = {
 }
 
 
-def _snapshot_checkpoint(stage: str, records: List[Dict[str, Any]]) -> Dict[str, Any]:
+def _snapshot_checkpoint(stage: str, records: List[Dict[str, Any]], record_count: int | None = None) -> Dict[str, Any]:
     sample_ids = [r.get('event_id') for r in records[:5]]
     return {
         'stage': stage,
-        'record_count': len(records),
+        'record_count': len(records) if record_count is None else int(record_count),
         'sample_event_ids': sample_ids,
         'captured_at': datetime.utcnow().isoformat(),
     }

@@ -81,7 +81,7 @@ def _run_dimension_rule_packs(context: Dict) -> Dict[str, Dict]:
         'completeness': int(ingestion_metrics.get('nulls', 0)),
         'consistency': int(storage_metrics.get('row_count_mismatch', 0)) + out_of_order_rows,
         'validity': malformed_count + invalid_time_rows + invalid_amount_rows,
-        'uniqueness': _count_duplicate_event_ids(transformed_records),
+        'uniqueness': int(transform_metrics.get('mapping_issues', _count_duplicate_event_ids(transformed_records))),
         'timeliness': timeliness_findings,
         'integrity': int(storage_metrics.get('checksum_mismatch', 0)) + (0 if downstream_metrics.get('reconciliation', False) else 1),
         'reliability': int(preprocess_metrics.get('type_mismatches', 0)) + int(transform_metrics.get('transformation_failures', 0)),

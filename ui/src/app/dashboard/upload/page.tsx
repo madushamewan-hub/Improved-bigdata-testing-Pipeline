@@ -57,8 +57,8 @@ export default function Upload() {
 
     // Warn if file is very large
     const fileSizeMB = file.size / 1024 / 1024
-    if (fileSizeMB > 500) {
-      if (!window.confirm(`File is ${fileSizeMB.toFixed(1)}MB. Very large files may take significant time and memory. Continue?`)) {
+    if (fileSizeMB > 1024) {
+      if (!window.confirm(`File is ${fileSizeMB.toFixed(1)}MB. Very large files may take significant time, memory, and disk space. Continue?`)) {
         return
       }
     }
@@ -194,7 +194,7 @@ export default function Upload() {
               <p className="text-4xl mb-2">📁</p>
               <p className="font-semibold text-gray-900">Drag and drop your data file here</p>
               <p className="text-gray-600 text-sm mt-1">Supported formats: CSV, JSON, NDJSON, Parquet, Excel, TSV</p>
-              <p className="text-gray-500 text-xs mt-2">No file size limit</p>
+              <p className="text-gray-500 text-xs mt-2">Configured server upload limit: 10GB (adjustable)</p>
               <input
                 ref={fileInputRef}
                 type="file"

@@ -43,8 +43,8 @@ The dashboard now supports multiple file formats optimized for different use cas
 ## Big Data Capabilities
 
 ### File Size Handling
-- **Maximum file size**: 500MB per upload
-- **Large file warning**: Prompted for files > 100MB
+- **Maximum file size**: 10GB per upload by default (`MAX_UPLOAD_SIZE_GB`, configurable)
+- **Large file warning**: Prompted for files > 1GB in the UI
 - **Chunked processing**: Backend automatically handles large files efficiently
 - **Progress feedback**: Upload status shown in real-time
 

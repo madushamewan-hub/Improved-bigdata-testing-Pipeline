@@ -1,6 +1,8 @@
+import os
+
 import duckdb
 from datetime import datetime
-from typing import Dict, List, Tuple
+from typing import Dict, Iterable, List, Tuple
 
 from .metrics import _count_duplicate_event_ids, _record_semantics, _safe_event_time
 from .validation import (
@@ -78,7 +80,7 @@ def transform(records: List[Dict]) -> Tuple[List[Dict], Dict]:
     return transformed, metrics
 
 
-def storage(records: List[Dict], db_path: str = ':memory:') -> Tuple[Dict, Dict]:
+def storage(records: Iterable[Dict], db_path: str = ':memory:') -> Tuple[Dict, Dict]:
     metrics = {'stored': 0, 'row_count_mismatch': 0, 'checksum_mismatch': 0}
     conn = duckdb.connect(database=db_path, read_only=False)
     conn.execute('''CREATE TABLE IF NOT EXISTS orders_curated (
@@ -93,26 +95,43 @@ def storage(records: List[Dict], db_path: str = ':memory:') -> Tuple[Dict, Dict]
                     total_tax DOUBLE
                     )''')
     conn.execute('DELETE FROM orders_curated')
+
+    batch_size = max(1000, int(os.environ.get('DUCKDB_INSERT_BATCH_SIZE', '10000')))
+    insert_rows = []
+    checksum_rows: List[Dict] = []
+
     for r in records:
-        conn.execute(
-            '''INSERT INTO orders_curated VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''',
+        row = dict(r)
+        insert_rows.append(
             (
-                r['event_id'],
-                r['event_time'],
-                r['customer_id'],
-                r['source_system'],
-                float(r['amount']),
-                r['status'],
-                int(r['version']),
-                r['checksum'],
-                float(r['total_tax']),
-            ),
+                row['event_id'],
+                row['event_time'],
+                row['customer_id'],
+                row['source_system'],
+                float(row['amount']),
+                row['status'],
+                int(row['version']),
+                row['checksum'],
+                float(row['total_tax']),
+            )
         )
-        metrics['stored'] += 1
+        checksum_rows.append(row)
+
+        if len(insert_rows) >= batch_size:
+            conn.executemany('''INSERT INTO orders_curated VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', insert_rows)
+            metrics['stored'] += len(insert_rows)
+            metrics['checksum_mismatch'] += checksum_mismatch_count(checksum_rows)
+            insert_rows.clear()
+            checksum_rows.clear()
+
+    if insert_rows:
+        conn.executemany('''INSERT INTO orders_curated VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)''', insert_rows)
+        metrics['stored'] += len(insert_rows)
+        metrics['checksum_mismatch'] += checksum_mismatch_count(checksum_rows)
+
     results = conn.execute('SELECT COUNT(*) FROM orders_curated').fetchone()[0]
-    if results != len(records):
-        metrics['row_count_mismatch'] = abs(results - len(records))
-    metrics['checksum_mismatch'] = checksum_mismatch_count(records)
+    if results != metrics['stored']:
+        metrics['row_count_mismatch'] = abs(results - metrics['stored'])
     conn.close()
     return metrics, {'stored_rows': results}
 

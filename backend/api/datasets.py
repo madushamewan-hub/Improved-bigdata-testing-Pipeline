@@ -49,8 +49,9 @@ async def upload_dataset(file: UploadFile = File(...)):
         file_path = os.path.join('uploads', os.path.basename(file.filename))
         os.makedirs('uploads', exist_ok=True)
 
+        copy_buffer_mb = max(1, int(os.environ.get('UPLOAD_COPY_BUFFER_MB', '16')))
         with open(file_path, 'wb') as f:
-            shutil.copyfileobj(file.file, f)
+            shutil.copyfileobj(file.file, f, length=copy_buffer_mb * 1024 * 1024)
 
         file_size = os.path.getsize(file_path)
         is_valid, error_msg = FileParser.validate_file(file_path, file_size)

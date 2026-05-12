@@ -13,9 +13,12 @@ class FileParser:
     """Parse different file formats into pandas DataFrame"""
     
     SUPPORTED_FORMATS = ['csv', 'json', 'ndjson', 'parquet', 'xlsx', 'xls', 'tsv']
-    MAX_FILE_SIZE = 2 * 1024 * 1024 * 1024  # 2GB (increased from 500MB)
+    MAX_FILE_SIZE_GB = float(os.environ.get('MAX_UPLOAD_SIZE_GB', '10'))
+    MAX_FILE_SIZE = int(MAX_FILE_SIZE_GB * 1024 * 1024 * 1024) if MAX_FILE_SIZE_GB > 0 else 0
     PREVIEW_ROWS = 5
-    CHUNK_SIZE = 100000  # Process in chunks of 100k rows for large files
+    CHUNK_SIZE = int(os.environ.get('FILE_PARSER_CHUNK_SIZE', '100000'))  # Process in chunks of 100k rows for large files
+    LARGE_FILE_THRESHOLD_BYTES = int(float(os.environ.get('LARGE_FILE_THRESHOLD_MB', '100')) * 1024 * 1024)
+    MAX_ROWS_TO_LOAD = int(os.environ.get('FILE_PARSER_MAX_ROWS', '1000000'))
     
     @staticmethod
     def get_file_format(filename: str) -> str:
@@ -28,8 +31,11 @@ class FileParser:
     @staticmethod
     def validate_file(file_path: str, file_size: int) -> Tuple[bool, str]:
         """Validate file size and format"""
-        if file_size > FileParser.MAX_FILE_SIZE:
-            return False, f"File exceeds 2GB limit. Size: {file_size / 1024 / 1024 / 1024:.1f}GB"
+        if FileParser.MAX_FILE_SIZE > 0 and file_size > FileParser.MAX_FILE_SIZE:
+            return False, (
+                f"File exceeds configured {FileParser.MAX_FILE_SIZE_GB:g}GB limit. "
+                f"Size: {file_size / 1024 / 1024 / 1024:.1f}GB"
+            )
         
         if not os.path.exists(file_path):
             return False, "File not found"
@@ -43,19 +49,20 @@ class FileParser:
             # Get file size to determine if chunking is needed
             file_size = os.path.getsize(file_path)
             chunk_size = kwargs.get('chunksize', FileParser.CHUNK_SIZE)
+            max_rows = kwargs.get('max_rows', FileParser.MAX_ROWS_TO_LOAD)
             
             # First, get total row count without loading all data
             total_rows = sum(1 for _ in open(file_path)) - 1  # Subtract header
             
             # For large files, use chunked reading
-            if file_size > 100 * 1024 * 1024:  # 100MB threshold
+            if file_size > FileParser.LARGE_FILE_THRESHOLD_BYTES:
                 chunks = []
                 rows_processed = 0
                 for chunk in pd.read_csv(file_path, sep=',', low_memory=False, chunksize=chunk_size):
                     chunks.append(chunk)
                     rows_processed += len(chunk)
                     # Limit total chunks to prevent memory issues
-                    if len(chunks) * chunk_size > 1000000:  # Max 1M rows
+                    if rows_processed >= max_rows:
                         break
                 if chunks:
                     df = pd.concat(chunks, ignore_index=True)
@@ -133,7 +140,7 @@ class FileParser:
         """Parse NDJSON file (newline-delimited JSON) with chunked reading"""
         try:
             records = []
-            max_records = kwargs.get('max_records', 1000000)  # Limit to 1M records
+            max_records = kwargs.get('max_records', FileParser.MAX_ROWS_TO_LOAD)
             
             # First pass: count total lines
             total_lines = sum(1 for _ in open(file_path))

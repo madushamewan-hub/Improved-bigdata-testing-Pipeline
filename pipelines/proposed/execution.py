@@ -1,3 +1,4 @@
+import os
 import sys
 from typing import Any, Dict, List
 
@@ -16,6 +17,60 @@ from .runtime import (
 from .sector_targets import evaluate_sector_targets
 from .stages import downstream_validation, ingestion, preprocessing, storage, transform
 from .validation import REQUIRED_FIELDS
+
+
+SPARK_SAMPLE_LIMIT = 1000
+
+
+def _resolve_spark_parallelism(record_count: int) -> int:
+    configured_parallelism = os.environ.get('SPARK_PARALLELISM')
+    if configured_parallelism:
+        try:
+            return max(1, int(configured_parallelism))
+        except ValueError:
+            pass
+
+    cpu_total = max(1, os.cpu_count() or 1)
+    if record_count <= 1_000:
+        return max(2, min(cpu_total, 4))
+    if record_count <= 100_000:
+        return max(4, min(cpu_total * 2, 32))
+    return max(8, min(cpu_total * 4, 64))
+
+
+def _sample_rows_from_df(df, limit: int = SPARK_SAMPLE_LIMIT) -> List[Dict[str, Any]]:
+    return [row.asDict() for row in df.limit(limit).collect()]
+
+
+def _spark_duplicate_issue_count(df, F) -> int:
+    duplicate_row = (
+        df.groupBy('event_id')
+        .count()
+        .filter(F.col('count') > 1)
+        .select(F.sum(F.col('count') - F.lit(1)).alias('duplicate_count'))
+        .collect()[0]
+    )
+    return int(duplicate_row['duplicate_count'] or 0)
+
+
+def _spark_downstream_validation(source_records: List[Dict], transformed_df) -> Dict[str, Any]:
+    source_ids = {str(row.get('event_id')) for row in source_records}
+    source_times = [str(row.get('event_time')) for row in source_records]
+    target_ids = set()
+    compared_rows = 0
+    mismatches = 0
+
+    for row in transformed_df.select('event_id', 'event_time', '__row_position').toLocalIterator():
+        target_ids.add(str(row['event_id']))
+        compared_rows += 1
+        row_position = int(row['__row_position']) if row['__row_position'] is not None else compared_rows - 1
+        if row_position >= len(source_times) or str(row['event_time']) != source_times[row_position]:
+            mismatches += 1
+
+    return {
+        'reconciliation': source_ids == target_ids and compared_rows == len(source_records),
+        'out_of_order': float(mismatches / max(1, max(compared_rows, len(source_records)))),
+    }
 
 
 def _run_python_batch_internal(orders: List[Dict], db_path: str, sector: str, policy: Dict[str, Any]) -> Dict[str, Any]:
@@ -104,12 +159,21 @@ def _run_spark_batch_internal(orders: List[Dict], db_path: str, sector: str, pol
     checkpoint_flow: List[Dict[str, Any]] = []
 
     spark_python = _configure_spark_python_runtime()
+    spark_master = os.environ.get('SPARK_MASTER', 'local[*]')
+    spark_driver_memory = os.environ.get('SPARK_DRIVER_MEMORY', '4g')
+    spark_executor_memory = os.environ.get('SPARK_EXECUTOR_MEMORY', spark_driver_memory)
+
     spark = (
         SparkSession.builder
-        .master('local[1]')
+        .master(spark_master)
         .appName('integrity-testing-proposed')
         .config('spark.pyspark.python', spark_python)
         .config('spark.pyspark.driver.python', spark_python)
+        .config('spark.driver.memory', spark_driver_memory)
+        .config('spark.executor.memory', spark_executor_memory)
+        .config('spark.sql.adaptive.enabled', 'true')
+        .config('spark.sql.adaptive.coalescePartitions.enabled', 'true')
+        .config('spark.serializer', 'org.apache.spark.serializer.KryoSerializer')
         .getOrCreate()
     )
     spark.sparkContext.setLogLevel('ERROR')
@@ -128,14 +192,28 @@ def _run_spark_batch_internal(orders: List[Dict], db_path: str, sector: str, pol
             checkpoint_flow.append(_snapshot_checkpoint('transformation', transformed))
             checkpoint_flow.append(_snapshot_checkpoint('storage', transformed))
             downstream_metrics = downstream_validation(transformed, orders)
+            spark_parallelism = _resolve_spark_parallelism(0)
         else:
-            df = spark.createDataFrame(ingested)
+            indexed_ingested = [
+                {
+                    **row,
+                    '__row_position': index,
+                }
+                for index, row in enumerate(ingested)
+            ]
+            spark_parallelism = _resolve_spark_parallelism(len(indexed_ingested))
+            spark.conf.set('spark.default.parallelism', str(spark_parallelism))
+            spark.conf.set('spark.sql.shuffle.partitions', str(spark_parallelism))
+
+            rdd = spark.sparkContext.parallelize(indexed_ingested, numSlices=spark_parallelism)
+            df = spark.createDataFrame(rdd).repartition(spark_parallelism).cache()
 
             typed_df = df.select(
                 *[F.col(field) for field in REQUIRED_FIELDS],
+                F.col('__row_position'),
                 F.col('amount').cast('double').alias('amount_cast'),
                 F.col('version').cast('int').alias('version_cast'),
-            )
+            ).cache()
 
             bad_type_df = typed_df.filter(
                 (F.col('amount').isNotNull() & F.col('amount_cast').isNull())
@@ -146,26 +224,44 @@ def _run_spark_batch_internal(orders: List[Dict], db_path: str, sector: str, pol
                 'malformed': 0,
             }
 
-            good_type_df = typed_df.filter(
-                F.col('amount_cast').isNotNull() & F.col('version_cast').isNotNull()
-            ).drop('amount', 'version').withColumnRenamed('amount_cast', 'amount').withColumnRenamed('version_cast', 'version')
+            good_type_df = (
+                typed_df.filter(
+                    F.col('amount_cast').isNotNull() & F.col('version_cast').isNotNull()
+                )
+                .drop('amount', 'version')
+                .withColumnRenamed('amount_cast', 'amount')
+                .withColumnRenamed('version_cast', 'version')
+                .repartition(spark_parallelism)
+                .cache()
+            )
+            preprocessed_count = int(good_type_df.count())
+            preprocessed = _sample_rows_from_df(good_type_df)
+            checkpoint_flow.append(_snapshot_checkpoint('preprocessing', preprocessed, record_count=preprocessed_count))
 
-            preprocessed = [row.asDict() for row in good_type_df.collect()]
-            checkpoint_flow.append(_snapshot_checkpoint('preprocessing', preprocessed))
-
-            transformed_df = good_type_df.withColumn('total_tax', F.round(F.col('amount') * F.lit(0.1), 2))
-            transformed = [row.asDict() for row in transformed_df.collect()]
+            transformed_df = (
+                good_type_df.withColumn('total_tax', F.round(F.col('amount') * F.lit(0.1), 2))
+                .repartition(spark_parallelism)
+                .cache()
+            )
+            transformed_count = int(transformed_df.count())
+            transformed = _sample_rows_from_df(transformed_df)
             transform_metrics = {
                 'transformation_failures': 0,
-                'mapping_issues': _count_duplicate_event_ids(transformed),
+                'mapping_issues': _spark_duplicate_issue_count(transformed_df, F),
             }
-            checkpoint_flow.append(_snapshot_checkpoint('transformation', transformed))
+            checkpoint_flow.append(_snapshot_checkpoint('transformation', transformed, record_count=transformed_count))
 
-            storage_metrics, storage_info = storage(transformed, db_path=db_path)
-            checkpoint_flow.append(_snapshot_checkpoint('storage', transformed))
-            downstream_metrics = downstream_validation(transformed, orders)
+            storage_metrics, storage_info = storage((row.asDict() for row in transformed_df.toLocalIterator()), db_path=db_path)
+            checkpoint_flow.append(_snapshot_checkpoint('storage', transformed, record_count=storage_info.get('stored_rows', transformed_count)))
+            downstream_metrics = _spark_downstream_validation(orders, transformed_df)
 
-        return _finalize_proposed_metrics(
+            for cached_df in (df, typed_df, good_type_df, transformed_df):
+                try:
+                    cached_df.unpersist()
+                except Exception:
+                    pass
+
+        final_metrics = _finalize_proposed_metrics(
             orders=orders,
             transformed=transformed,
             ingestion_metrics=ingestion_metrics,
@@ -181,6 +277,10 @@ def _run_spark_batch_internal(orders: List[Dict], db_path: str, sector: str, pol
             quarantine_records=quarantine_records,
             resilience_policy=policy,
         )
+        final_metrics['parallel_workers'] = spark_parallelism
+        final_metrics['spark_master'] = spark_master
+        final_metrics['spark_shuffle_partitions'] = spark_parallelism
+        return final_metrics
     finally:
         try:
             spark.stop()
@@ -201,7 +301,7 @@ def _dispatch_batch(orders: List[Dict], db_path: str, sector: str, resilience_po
 
 
 def run_streaming(orders: List[Dict], db_path: str = ':memory:', sector: str = 'cross_industry', resilience_policy: Dict[str, Any] = None, engine: str = 'python') -> Dict:
-    batch_size = 20
+    batch_size = 20 if engine == 'python' else max(500, min(5000, max(500, len(orders) // max(1, os.cpu_count() or 1))))
     final_metrics = {}
     findings_accumulator = {dim: 0 for dim in CORE_DIMENSIONS}
     score_accumulator = {dim: 0.0 for dim in CORE_DIMENSIONS}
@@ -211,6 +311,8 @@ def run_streaming(orders: List[Dict], db_path: str = ':memory:', sector: str = '
     evidence_batches: List[Dict[str, Any]] = []
     advanced_metric_accumulator: Dict[str, float] = {}
     total_retry_attempts = 0
+    total_recovery_attempts = 0
+    total_successful_recoveries = 0
     total_quarantine_count = 0
     total_checkpoint_recoveries = 0
     checkpoint_batches: List[Dict[str, Any]] = []
@@ -237,6 +339,8 @@ def run_streaming(orders: List[Dict], db_path: str = ':memory:', sector: str = '
         for metric_key, metric_score in metrics.get('advanced_metric_scores', {}).items():
             advanced_metric_accumulator[metric_key] = advanced_metric_accumulator.get(metric_key, 0.0) + float(metric_score)
         total_retry_attempts += int(metrics.get('retry_attempts', 0))
+        total_recovery_attempts += int(metrics.get('recovery_attempts', 0))
+        total_successful_recoveries += int(metrics.get('successful_recoveries', 0))
         total_quarantine_count += int(metrics.get('quarantine_count', 0))
         total_checkpoint_recoveries += int(metrics.get('checkpoint_recoveries', 0))
         checkpoint_batches.append({'batch_index': batches, 'checkpoint_flow': metrics.get('checkpoint_flow', [])})
@@ -263,6 +367,8 @@ def run_streaming(orders: List[Dict], db_path: str = ':memory:', sector: str = '
             for metric_key in advanced_metric_accumulator
         }
         final_metrics['retry_attempts'] = total_retry_attempts
+        final_metrics['recovery_attempts'] = total_recovery_attempts
+        final_metrics['successful_recoveries'] = total_successful_recoveries
         final_metrics['quarantine_count'] = total_quarantine_count
         final_metrics['checkpoint_recoveries'] = total_checkpoint_recoveries
         final_metrics['checkpoint_flow'] = checkpoint_batches
