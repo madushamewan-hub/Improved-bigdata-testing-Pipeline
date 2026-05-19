@@ -7,28 +7,10 @@ from fastapi import APIRouter, File, HTTPException, UploadFile
 
 from backend.database import Dataset, ExperimentRun, PipelineResult, SessionLocal, StageCheckResult
 from backend.file_parser import FileParser
+from backend.utils import _sanitize_for_json
 
 router = APIRouter()
 
-
-def _sanitize_for_json(value):
-    if isinstance(value, dict):
-        return {k: _sanitize_for_json(v) for k, v in value.items()}
-    if isinstance(value, list):
-        return [_sanitize_for_json(v) for v in value]
-
-    if isinstance(value, (np.integer, np.int_)):
-        return int(value)
-    if isinstance(value, (np.floating, np.float_)):
-        if math.isfinite(value):
-            return float(value)
-        return None
-    if isinstance(value, float):
-        if math.isfinite(value):
-            return value
-        return None
-
-    return value
 
 
 @router.post('/api/upload')

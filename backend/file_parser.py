@@ -5,8 +5,9 @@ Handles CSV, JSON, Parquet, Excel, TSV, and NDJSON files.
 import os
 import json
 import pandas as pd
-from typing import Tuple, Any, Dict
+from typing import Tuple, Any, Dict, List
 from pathlib import Path
+import concurrent.futures
 
 
 class FileParser:
@@ -50,25 +51,55 @@ class FileParser:
             file_size = os.path.getsize(file_path)
             chunk_size = kwargs.get('chunksize', FileParser.CHUNK_SIZE)
             max_rows = kwargs.get('max_rows', FileParser.MAX_ROWS_TO_LOAD)
+            max_workers = kwargs.get('max_workers', 4)
             
             # First, get total row count without loading all data
             total_rows = sum(1 for _ in open(file_path)) - 1  # Subtract header
             
             # For large files, use chunked reading
             if file_size > FileParser.LARGE_FILE_THRESHOLD_BYTES:
-                chunks = []
+                # Process chunks in parallel using a thread pool. Each worker returns
+                # a small summary: sample rows (up to per-chunk limit) and schema info.
+                per_chunk_sample = max(1, int(max_rows / max(1, (total_rows // chunk_size) + 1)))
                 rows_processed = 0
-                for chunk in pd.read_csv(file_path, sep=',', low_memory=False, chunksize=chunk_size):
-                    chunks.append(chunk)
-                    rows_processed += len(chunk)
-                    # Limit total chunks to prevent memory issues
-                    if rows_processed >= max_rows:
-                        break
-                if chunks:
-                    df = pd.concat(chunks, ignore_index=True)
-                else:
-                    df = pd.DataFrame()
-                
+                samples: List[dict] = []
+                merged_schema: Dict[str, str] = {}
+
+                def _process_chunk(chunk_df: pd.DataFrame):
+                    sample = chunk_df.head(per_chunk_sample).to_dict(orient='records')
+                    schema = {col: str(chunk_df[col].dtype) for col in chunk_df.columns}
+                    return len(chunk_df), sample, schema
+
+                with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as ex:
+                    futures = []
+                    for chunk in pd.read_csv(file_path, sep=',', low_memory=False, chunksize=chunk_size):
+                        futures.append(ex.submit(_process_chunk, chunk))
+                        # stop scheduling more work if we've reached a soft cap
+                        # (prevents excessive scheduling for extremely large files)
+                        if len(futures) > (max_workers * 10):
+                            break
+
+                    # Collect results as they complete
+                    for fut in concurrent.futures.as_completed(futures):
+                        try:
+                            cnt, sample, schema = fut.result()
+                        except Exception:
+                            continue
+                        rows_processed += cnt
+                        # merge schema: prefer most specific dtype seen
+                        for k, v in schema.items():
+                            prev = merged_schema.get(k)
+                            if prev is None:
+                                merged_schema[k] = v
+                            elif prev != v:
+                                merged_schema[k] = 'object'
+                        # accumulate samples until the desired max_rows
+                        if len(samples) < max_rows:
+                            samples.extend(sample)
+                            if len(samples) > max_rows:
+                                samples = samples[:max_rows]
+
+                df = pd.DataFrame(samples)
                 processing_mode = "limited" if rows_processed < total_rows else "full"
             else:
                 # Small files - read directly
@@ -253,7 +284,7 @@ class FileParser:
         """Get preview of dataframe rows as JSON-safe format"""
         preview_records = df.head(rows).to_dict(orient="records")
         # Sanitize NaN/inf values
-        from backend.main import _sanitize_for_json
+        from backend.utils import _sanitize_for_json
         return _sanitize_for_json(preview_records)
     
     @staticmethod

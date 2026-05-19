@@ -43,6 +43,8 @@ class ExperimentRunRequest(BaseModel):
     mode: str  # baseline, proposed, compare
     force_full_scan: Optional[bool] = False
     engine: Optional[str] = 'python'
+    sample_rate: Optional[float] = None  # fractional 0.0-1.0 for sampling/approx mode
+    max_workers: Optional[int] = None  # allow overriding parallel workers for parsing
 
 class ExperimentRunResponse(BaseModel):
     id: int

@@ -63,7 +63,8 @@ def inject_corruption(orders: List[Dict], corrupt_rate: float = 0.1) -> List[Dic
     for o in orders:
         if random.random() < corrupt_rate:
             corrupted = dict(o)
-            corrupted['amount'] = corrupted['amount'] * 10 + 1
+            if isinstance(corrupted.get('amount'), (int, float)):
+                corrupted['amount'] = corrupted['amount'] * 10 + 1
             corrupted['checksum'] = 'invalid'
             result.append(corrupted)
         else:

@@ -85,7 +85,7 @@ async def run_experiment(req: ExperimentRunRequest):
         exp_run_id = exp_run.id
 
         processing_info = dataset_schema_json.get('processing_info', {})
-        source_records = _load_dataset_records(dataset)
+        source_records = _load_dataset_records(dataset, sample_rate=getattr(req, 'sample_rate', None), max_workers=getattr(req, 'max_workers', None))
         scenario_records = _apply_scenario(source_records, req.scenario_name)
         scenario_row_count = len(scenario_records)
         scenario_amended_count = _compute_scenario_amended_count(source_records, scenario_records, req.scenario_name)

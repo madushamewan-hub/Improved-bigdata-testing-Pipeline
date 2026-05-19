@@ -84,8 +84,30 @@ def _normalize_dataset_records(records, dataset: Dataset):
     ]
 
 
-def _load_dataset_records(dataset: Dataset):
+def _load_dataset_records(dataset: Dataset, sample_rate: float | None = None, max_workers: int | None = None):
+    """Load and normalize dataset records.
+
+    Supports optional sampling (`sample_rate` 0..1) and `max_workers` to pass
+    down to the file parser for parallel chunk processing.
+    """
     file_format = _resolve_dataset_file_format(dataset)
-    df, _, _ = FileParser.parse_file(dataset.file_path, file_format)
+
+    # Derive max_rows to request from the parser when sampling is requested.
+    parser_kwargs = {}
+    if sample_rate is not None and 0.0 < float(sample_rate) < 1.0:
+        try:
+            total = int(getattr(dataset, 'row_count', 0) or 0)
+            if total > 0:
+                parser_kwargs['max_rows'] = max(1, int(total * float(sample_rate)))
+            else:
+                # fall back to FileParser.MAX_ROWS_TO_LOAD
+                parser_kwargs['max_rows'] = int(FileParser.MAX_ROWS_TO_LOAD * float(sample_rate))
+        except Exception:
+            parser_kwargs['max_rows'] = int(FileParser.MAX_ROWS_TO_LOAD * float(sample_rate))
+
+    if max_workers is not None:
+        parser_kwargs['max_workers'] = int(max_workers)
+
+    df, _, _ = FileParser.parse_file(dataset.file_path, file_format, **parser_kwargs)
     raw_records = df.to_dict(orient='records')
     return _normalize_dataset_records(raw_records, dataset)

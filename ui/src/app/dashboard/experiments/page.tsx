@@ -326,6 +326,8 @@ export default function Experiments() {
   const [mode, setMode] = useState('compare')
   const [engine, setEngine] = useState('python')
   const [forceFullScan, setForceFullScan] = useState(false)
+  const [sampleRate, setSampleRate] = useState<number>(100)
+  const [maxWorkers, setMaxWorkers] = useState<number>(4)
   const [running, setRunning] = useState(false)
   const [result, setResult] = useState<any>(null)
   const [error, setError] = useState('')
@@ -406,6 +408,8 @@ export default function Experiments() {
           mode: mode,
           force_full_scan: forceFullScan,
           engine: engine,
+          sample_rate: Number((sampleRate || 100) / 100),
+          max_workers: Number(maxWorkers || 4),
         }),
       })
       const data = await res.json()
@@ -656,6 +660,37 @@ export default function Experiments() {
                       If Spark is disabled, the active backend Python version does not match the required runtime or the alternate Spark Python path is not configured.
                     </p>
                   )}
+                </div>
+              </div>
+
+              {/* Sampling & Parallelism */}
+              <div className="bg-slate-50 border border-slate-200 rounded-lg p-4 mb-4">
+                <label className="block text-sm font-semibold text-gray-900 mb-2">Sampling & Parallelism</label>
+                <div className="grid grid-cols-2 gap-4">
+                  <div>
+                    <p className="text-xs text-gray-600">Sample Rate (%)</p>
+                    <input
+                      type="number"
+                      min={1}
+                      max={100}
+                      value={sampleRate}
+                      onChange={(e) => setSampleRate(Number(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Lower sample speeds up runs (approximate results).</p>
+                  </div>
+                  <div>
+                    <p className="text-xs text-gray-600">Parser Workers</p>
+                    <input
+                      type="number"
+                      min={1}
+                      max={32}
+                      value={maxWorkers}
+                      onChange={(e) => setMaxWorkers(Number(e.target.value))}
+                      className="w-full border border-gray-300 rounded-lg px-3 py-2"
+                    />
+                    <p className="text-xs text-gray-500 mt-1">Increase for more parallel parsing.</p>
+                  </div>
                 </div>
               </div>
 
