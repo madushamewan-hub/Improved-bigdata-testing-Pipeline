@@ -247,6 +247,9 @@ The research demonstrates:
 
 ## 🛠️ Development
 
+Set-Location "c:\Users\ASUS\Downloads\Project"
+py -3.11 -m uvicorn backend.main:app --host 127.0.0.1 --port 8000
+
 ### Backend Development
 ```bash
 cd backend
@@ -257,6 +260,8 @@ python main.py
 uvicorn main:app --reload
 ```
 
+Set-Location "c:\Users\ASUS\Downloads\Project\ui"
+npm run dev
 ### Frontend Development
 ```bash
 cd ui
